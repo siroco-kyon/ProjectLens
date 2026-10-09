@@ -7,7 +7,7 @@ using ProjectLens.Core.Models;
 
 namespace ProjectLens.Tests;
 
-// テスト用フレームワークを増やさず、社内のオフライン環境でも同じ検証を実行する。
+// テスト用フレームワークを増やさず、オフライン環境でも同じ検証を実行する。
 internal static class Program
 {
     private const string BodyDelimiter = "\n\n<!-- CONTEXT BODY -->\n";
@@ -188,7 +188,7 @@ internal static class Program
     {
         using var fixture = new Fixture("日本語プロジェクト");
         fixture.Write("画面/顧客.cs", "// 日本語のコメント\nnamespace 架空.画面; public class 顧客 { public string 氏名 {get;set;} = \"\"; }");
-        fixture.Write("業務/旧形式.cs", "// 会社で使う日本語\nnamespace 架空.業務; public class 受注 { public void 登録() {} }", Encoding.GetEncoding(932));
+        fixture.Write("業務/旧形式.cs", "// 日本語コメントの文字コード確認\nnamespace 架空.業務; public class 受注 { public void 登録() {} }", Encoding.GetEncoding(932));
         var result = await fixture.Analyze();
         True(result.Types.Any(t => t.Name == "顧客") && result.Types.Any(t => t.Name == "受注"), "UTF-8 と CP932 の識別子");
         True(result.Files.Any(f => f.RelativePath.Contains("旧形式")), "日本語ファイルパス");

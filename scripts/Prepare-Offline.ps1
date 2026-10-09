@@ -10,7 +10,7 @@ $cachePath = Join-Path $kitPath 'package-cache'
 $feedPath = Join-Path $kitPath 'feed'
 New-Item -ItemType Directory -Path $feedPath -Force | Out-Null
 
-# 許可されたオンライン開発PCでのみ実行する。会社の解析対象プロジェクトは一切扱わない。
+# 接続可能な開発環境で、本ツールのビルド・配布に必要な依存パッケージを準備する。
 & dotnet restore (Join-Path $repoPath 'ProjectLens.sln') --locked-mode --packages $cachePath
 if ($LASTEXITCODE -ne 0) { throw 'ソース用パッケージの復元に失敗しました。' }
 & dotnet restore (Join-Path $repoPath 'src\ProjectLens.App\ProjectLens.App.csproj') -r win-x64 --packages $cachePath --force -p:SelfContained=true "-p:RuntimeLockDirectory=$kitPath"
@@ -34,4 +34,4 @@ Get-ChildItem -LiteralPath $feedPath -Filter '*.nupkg' -File | ForEach-Object {
     [PSCustomObject]@{ File = $_.Name; SHA256 = $hash.Hash }
 } | Export-Csv -LiteralPath (Join-Path $kitPath 'SHA256.csv') -NoTypeInformation -Encoding UTF8
 Write-Host "オフラインフィード: $feedPath ($($packagesToCopy.Count) packages)"
-Write-Host 'feed、NuGet.Offline.Config、SHA256.csvを一緒に持ち込んでください。SDKとVisual Studioは別途必要です。'
+Write-Host 'feed、NuGet.Offline.Config、SHA256.csvを配置関係を保ってビルド先へコピーしてください。SDKとVisual Studioは別途必要です。'
