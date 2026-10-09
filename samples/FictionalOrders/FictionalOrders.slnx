@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="FictionalOrders.Core/FictionalOrders.Core.csproj" />
+  <Project Path="FictionalOrders.Desktop/FictionalOrders.Desktop.csproj" />
+</Solution>

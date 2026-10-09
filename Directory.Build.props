@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>14.0</LangVersion>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAudit>false</NuGetAudit>
+    <Deterministic>true</Deterministic>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <!-- 配布用のRID復元は、通常ビルドのロックとプロジェクトごとに分離する。 -->
+    <NuGetLockFilePath Condition="'$(RuntimeLockDirectory)' != ''">$(RuntimeLockDirectory)\$(MSBuildProjectName).runtime.lock.json</NuGetLockFilePath>
+  </PropertyGroup>
+</Project>

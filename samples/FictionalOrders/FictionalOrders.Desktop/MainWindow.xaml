@@ -1,0 +1,9 @@
+<Window x:Class="FictionalOrders.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="架空の受注一覧" Width="640" Height="400">
+  <StackPanel Margin="24">
+    <TextBlock Text="架空データのみを使用する解析サンプル" FontSize="20" Margin="0,0,0,20" />
+    <DataGrid ItemsSource="{Binding Orders}" AutoGenerateColumns="True" IsReadOnly="True" />
+  </StackPanel>
+</Window>
