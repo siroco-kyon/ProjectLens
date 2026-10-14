@@ -32,6 +32,18 @@ public partial class App : Application
             var sample = ArgumentValue(e.Args, "--sample") ?? ArgumentValue(e.Args, "--input");
             if (sample is not null) await smokeWindow.ViewModel.RunSmokeTestAsync(sample);
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            var originalWidth = smokeWindow.Width;
+            var originalHeight = smokeWindow.Height;
+            smokeWindow.Width = smokeWindow.MinWidth;
+            smokeWindow.Height = smokeWindow.MinHeight;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            smokeWindow.MainContent.UpdateLayout();
+            if (smokeWindow.PreviewBox.ActualHeight < 60 || smokeWindow.ContextSettingsScroll.ViewportHeight < 30
+                || smokeWindow.GenerateButton.ActualHeight < 25)
+                throw new InvalidOperationException("最小ウィンドウサイズで設定・生成・プレビューの表示領域が不足しています。");
+            smokeWindow.Width = originalWidth;
+            smokeWindow.Height = originalHeight;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             var screenshot = ArgumentValue(e.Args, "--screenshot");
             if (screenshot is not null) SaveDiagnosticScreenshot(smokeWindow, screenshot);
             smokeWindow.Close();

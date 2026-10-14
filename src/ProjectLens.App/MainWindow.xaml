@@ -166,33 +166,43 @@
             <GridSplitter Grid.Column="3" Width="4" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" ResizeBehavior="PreviousAndNext" />
             <Border Grid.Column="4" Background="{StaticResource PanelBrush}" CornerRadius="7" Padding="14">
                 <Grid>
-                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-                    <StackPanel Grid.Row="0">
+                    <Grid.RowDefinitions><RowDefinition Height="*" MaxHeight="260" /><RowDefinition Height="*" MinHeight="190" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <ScrollViewer x:Name="ContextSettingsScroll" Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,0,0,8">
+                    <StackPanel>
                         <TextBlock Text="Copilot用コンテキスト" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <Grid IsEnabled="{Binding CanEdit}">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                             <StackPanel><TextBlock Text="資料の種類" Style="{StaticResource MutedText}" Margin="0,0,0,4" /><ComboBox ItemsSource="{Binding ContextKinds}" SelectedItem="{Binding SelectedKind}" DisplayMemberPath="Label" ToolTip="全体概要・構造一覧・選択した機能の解析" /></StackPanel>
                             <StackPanel Grid.Column="2"><TextBlock Text="Copilotへの指示" Style="{StaticResource MutedText}" Margin="0,0,0,4" /><ComboBox ItemsSource="{Binding PromptPurposes}" SelectedItem="{Binding SelectedPurpose}" DisplayMemberPath="Label" /></StackPanel>
                         </Grid>
+                        <StackPanel Visibility="{Binding IsFeatureContext, Converter={StaticResource BoolVisibility}}" IsEnabled="{Binding CanEdit}" Margin="0,9,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="75" /></Grid.ColumnDefinitions>
+                                <StackPanel><TextBlock Text="関連ファイルの補足" Style="{StaticResource MutedText}" Margin="0,0,0,4" /><ComboBox ItemsSource="{Binding RelatedDirections}" SelectedItem="{Binding SelectedRelatedDirection}" DisplayMemberPath="Label" ToolTip="関係表の起点から関連先へたどるのが参照先、逆にたどるのが参照元です。" AutomationProperties.Name="関連ファイルの方向" /></StackPanel>
+                                <StackPanel Grid.Column="2"><TextBlock Text="最大段数" Style="{StaticResource MutedText}" Margin="0,0,0,4" /><ComboBox ItemsSource="{Binding RelatedDepths}" SelectedItem="{Binding SelectedRelatedDepth}" DisplayMemberPath="Label" IsEnabled="{Binding CanChooseRelatedDepth}" ToolTip="選択ファイルから最大1〜3段。選択のみの場合は使いません。" AutomationProperties.Name="関連ファイルの最大段数" /></StackPanel>
+                            </Grid>
+                            <TextBlock Text="構文上の関係を補足。関連ファイルの本文は自動追加しません。" Style="{StaticResource MutedText}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        </StackPanel>
                         <TextBlock Text="調べたいこと・追加したい機能" Style="{StaticResource MutedText}" Margin="0,9,0,4" />
                         <TextBox Text="{Binding Request, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanEdit}" Height="54" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Copilotへの依頼内容" />
                         <CheckBox Content="選択したソース本文も含める（初期値 OFF）" IsChecked="{Binding IncludeSource}" IsEnabled="{Binding CanEdit}" Margin="0,9,0,3" FontSize="12" />
-                        <Grid Margin="0,5,0,9">
+                    </StackPanel>
+                    </ScrollViewer>
+                    <Grid Grid.Row="1">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <Grid Margin="0,0,0,9">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="75" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                             <TextBlock Text="1パートの上限文字数" Style="{StaticResource MutedText}" Margin="0,0,8,0" />
                             <TextBox Grid.Column="1" Text="{Binding PartSizeText, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanEdit}" ToolTip="1,000 ～ 100,000。見出しも含めて分割します。" AutomationProperties.Name="分割文字数" />
-                            <Button Grid.Column="2" Content="資料を生成" Command="{Binding GenerateCommand}" Style="{StaticResource PrimaryButton}" Margin="10,0,0,0" />
+                            <Button x:Name="GenerateButton" Grid.Column="2" Content="資料を生成" Command="{Binding GenerateCommand}" Style="{StaticResource PrimaryButton}" Margin="10,0,0,0" />
                         </Grid>
-                    </StackPanel>
-                    <Grid Grid.Row="1">
-                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-                        <TextBlock Text="{Binding PreviewHint}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,6" />
-                        <Grid Grid.Row="1" Margin="0,0,0,7"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Grid.Row="1" Text="{Binding PreviewHint}" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding PreviewHint}" Margin="0,0,0,6" />
+                        <Grid Grid.Row="2" Margin="0,0,0,7"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                             <ComboBox ItemsSource="{Binding Parts}" SelectedItem="{Binding SelectedPart}" DisplayMemberPath="Label" ToolTip="Copilotへ順番に渡すパートを選択" />
                             <Button Grid.Column="1" Content="このパートをコピー" Command="{Binding CopyCommand}" Margin="8,0,0,0" FontSize="11" Padding="8,5" />
                         </Grid>
-                        <TextBox Grid.Row="2" Text="{Binding PreviewText, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" FontFamily="Cascadia Mono, Consolas, Yu Gothic UI" FontSize="12" VerticalContentAlignment="Top" Padding="10" AutomationProperties.Name="コンテキストプレビュー" />
-                        <Grid Grid.Row="3" Margin="0,7,0,9"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock Text="{Binding ContextCharacters}" Style="{StaticResource MutedText}" /><TextBlock Grid.Column="1" Text="{Binding PartCharacters}" Style="{StaticResource MutedText}" /></Grid>
+                        <TextBox x:Name="PreviewBox" Grid.Row="3" Text="{Binding PreviewText, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" FontFamily="Cascadia Mono, Consolas, Yu Gothic UI" FontSize="12" VerticalContentAlignment="Top" Padding="10" AutomationProperties.Name="コンテキストプレビュー" />
+                        <Grid Grid.Row="4" Margin="0,7,0,9"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock Text="{Binding ContextCharacters}" Style="{StaticResource MutedText}" /><TextBlock Grid.Column="1" Text="{Binding PartCharacters}" Style="{StaticResource MutedText}" /></Grid>
                     </Grid>
                     <StackPanel Grid.Row="2">
                         <TextBlock Text="保存先（解析対象の外を指定）" Style="{StaticResource MutedText}" Margin="0,0,0,4" />
