@@ -27,6 +27,13 @@ internal static class Program
             ("400 ファイルと元ファイルのハッシュ維持", ManyFilesReadOnly),
             ("概要・構造・6 用途の指示文", ContextKindsAndPrompts),
             ("機能選択とソース本文の明示 opt-in", FeatureAndSource),
+            ("関連範囲の既定値と選択ファイルのみ", FeatureSelectionDefaults),
+            ("参照方向と 1～3 段の循環グラフ", FeatureDirectionDepths),
+            ("範囲外の関係・未解析ファイルを資料へ漏らさない", FeatureScopeIsolation),
+            ("選択・参照・診断パスの区切りと大文字小文字", FeatureNormalizedPaths),
+            ("複数選択・重複選択の最短距離と明示本文", FeatureMultipleSelections),
+            ("解析した参照方向と部分型の全定義ファイル", FeatureAnalyzedReferences),
+            ("関連範囲設定の検証と生成中キャンセル", FeatureOptionsValidation),
             ("Markdown の表・パス・コードフェンス", MarkdownEscaping),
             ("分割の文字数・連番・Unicode・情報保持", SplitLossless),
             ("md / txt 保存・対象配下禁止・上書き防止", ExportSafety),
@@ -259,6 +266,175 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task FeatureSelectionDefaults()
+    {
+        var options = new ContextOptions();
+        Equal(RelatedFileDirection.Both, options.RelatedDirection, "既定の方向は双方向");
+        Equal(1, options.RelatedDepth, "既定は直接関連のみ");
+        var result = RelationshipGraphFixture();
+        var generator = new ContextGenerator();
+        var defaults = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs"] });
+        var explicitDefaults = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs"], RelatedDirection = RelatedFileDirection.Both, RelatedDepth = 1 });
+        Equal(explicitDefaults.Markdown, defaults.Markdown, "未指定でも従来の双方向・1段と同じ資料");
+        AssertFileScope(result, defaults, "Graph/Seed.cs", "Graph/Out1.cs", "Graph/In1.cs");
+        var selectedOnly = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs"], RelatedDirection = RelatedFileDirection.None, RelatedDepth = 3, IncludeSource = true });
+        AssertFileScope(result, selectedOnly, "Graph/Seed.cs");
+        True(selectedOnly.Markdown.Contains("SOURCE_Seed"), "選択ファイルの本文を含む");
+        True(!selectedOnly.Markdown.Contains("SOURCE_Out1") && !selectedOnly.Markdown.Contains("SOURCE_In1"), "選択ファイルのみなら関連本文も含まない");
+        Equal(1, SelectedScopeRows(selectedOnly).Count, "選択のみの範囲表は1ファイル");
+        var split = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs"], RelatedDirection = RelatedFileDirection.Both, RelatedDepth = 3, MaxPartCharacters = 1000 });
+        True(split.Parts.Count > 1, "機能別資料を小さい文字数上限で分割");
+        var reconstructed = new StringBuilder();
+        foreach (var part in split.Parts)
+        {
+            True(part.Text.Length <= 1000, "機能別の範囲情報を含むヘッダー込みで文字数上限内");
+            var bodyStart = part.Text.IndexOf(BodyDelimiter, StringComparison.Ordinal);
+            True(bodyStart >= 0 && part.Text[..bodyStart].Contains(split.Scope), "各パートのヘッダーに機能別の範囲情報を保持");
+            reconstructed.Append(part.Text[(bodyStart + BodyDelimiter.Length)..]);
+        }
+        Equal(split.Markdown, reconstructed.ToString(), "機能別の範囲表も分割後に欠落なく復元");
+        return Task.CompletedTask;
+    }
+
+    private static Task FeatureDirectionDepths()
+    {
+        var result = RelationshipGraphFixture();
+        var generator = new ContextGenerator();
+        foreach (var direction in new[] { RelatedFileDirection.Outgoing, RelatedFileDirection.Incoming, RelatedFileDirection.Both })
+        {
+            for (var depth = 1; depth <= 3; depth++)
+            {
+                var expected = new List<string> { "Graph/Seed.cs" };
+                if (direction is RelatedFileDirection.Outgoing or RelatedFileDirection.Both)
+                    expected.AddRange(Enumerable.Range(1, depth).Select(i => $"Graph/Out{i}.cs"));
+                if (direction is RelatedFileDirection.Incoming or RelatedFileDirection.Both)
+                    expected.AddRange(Enumerable.Range(1, depth).Select(i => $"Graph/In{i}.cs"));
+                var document = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs"], RelatedDirection = direction, RelatedDepth = depth });
+                AssertFileScope(result, document, expected.ToArray());
+                var rows = SelectedScopeRows(document);
+                Equal(expected.Count, rows.Count, $"{direction} / {depth}段: 循環・重複辺でファイルを増やさない");
+                Equal(0, rows["Graph/Seed.cs"].Hops, "選択した起点は0段");
+                foreach (var path in expected.Skip(1))
+                    Equal(int.Parse(Path.GetFileNameWithoutExtension(path)[^1..]), rows[path].Hops, $"{path}の最短段数");
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task FeatureScopeIsolation()
+    {
+        var result = RelationshipGraphFixture();
+        var generator = new ContextGenerator();
+        foreach (var direction in Enum.GetValues<RelatedFileDirection>())
+        {
+            var document = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs"], RelatedDirection = direction, RelatedDepth = 3 });
+            True(!document.Markdown.Contains("Graph/Missing.cs") && !document.Markdown.Contains("Graph/UnknownProject.csproj"), "未解析の端点を関係表へ出さない");
+            True(!document.Markdown.Contains("Graph/MissingBridgeTarget.cs") && !document.Markdown.Contains("Graph/ProjectBridgeTarget.cs"), "未解析端点・プロジェクト宣言を介して別ファイルへ進まない");
+            True(!document.Markdown.Contains("Graph/Unrelated.cs"), "無関係なファイルパスを含めない");
+            True(!ContainsData(document, "EDGE_OUT_3_4") && !ContainsData(document, "EDGE_IN_4_3"), "片方だけ範囲内の辺は掲載しない");
+            True(!ContainsData(document, "DIAG_UNRELATED"), "無関係な診断を掲載しない");
+            True(ContainsData(document, "EDGE_SELF"), "両端が選択範囲内なら自己参照も掲載する");
+        }
+        // 全体資料は関連設定で範囲を変えず、プロジェクト参照宣言も従来どおり掲載する。
+        foreach (var kind in new[] { ContextKind.Overview, ContextKind.Structure })
+        {
+            var document = generator.Generate(result, new ContextOptions { Kind = kind, RelatedDirection = RelatedFileDirection.None });
+            AssertFileScope(result, document, result.Files.Select(f => f.RelativePath).ToArray());
+            True(ContainsData(document, "EDGE_PROJECT_DECLARATION"), "全体資料にはプロジェクト参照宣言も残す");
+        }
+        return Task.CompletedTask;
+    }
+
+    private static Task FeatureNormalizedPaths()
+    {
+        var files = new[] { GraphFile("Graph/Seed.cs"), GraphFile(@"Graph\Child.cs"), GraphFile("Graph/Leaf.cs"), GraphFile("Graph/Unrelated.cs") };
+        var result = GraphResult(files,
+            [new FileRelationship(@"GRAPH\SEED.CS", "graph/child.cs", "Reference", "EDGE_NORMALIZED_CHILD", "Inferred"),
+             new FileRelationship("GRAPH/CHILD.CS", @"graph\leaf.cs", "Reference", "EDGE_NORMALIZED_LEAF", "Inferred")],
+            [new AnalysisDiagnostic(@"GRAPH\CHILD.CS", 1, "Info", "DIAG_NORMALIZED_CHILD"), new AnalysisDiagnostic("graph/unrelated.cs", 1, "Info", "DIAG_UNRELATED")]);
+        var document = new ContextGenerator().Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = [@"graph\seed.cs"], RelatedDirection = RelatedFileDirection.Outgoing, RelatedDepth = 2 });
+        var rows = SelectedScopeRows(document);
+        Equal(3, rows.Count, "区切りと大小文字が混在しても2段を展開");
+        Equal(0, rows["Graph/Seed.cs"].Hops, "選択パスを正規化");
+        Equal(1, rows[@"Graph\\Child.cs"].Hops, "元のパス表示を保持して1段の関連を判定");
+        Equal(2, rows["Graph/Leaf.cs"].Hops, "混在する参照パスを正規化して次の段へ進む");
+        True(ContainsData(document, "EDGE_NORMALIZED_CHILD") && ContainsData(document, "EDGE_NORMALIZED_LEAF"), "範囲内の正規化した辺を掲載");
+        True(ContainsData(document, "DIAG_NORMALIZED_CHILD") && !ContainsData(document, "DIAG_UNRELATED"), "診断の範囲判定もパスを正規化");
+        return Task.CompletedTask;
+    }
+
+    private static Task FeatureMultipleSelections()
+    {
+        var result = RelationshipGraphFixture();
+        var document = new ContextGenerator().Generate(result, new ContextOptions
+        {
+            Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs", @"GRAPH\SEED.CS", "Graph/Out2.cs"],
+            RelatedDirection = RelatedFileDirection.Outgoing, RelatedDepth = 2, IncludeSource = true
+        });
+        AssertFileScope(result, document, "Graph/Seed.cs", "Graph/Out1.cs", "Graph/Out2.cs", "Graph/Out3.cs", "Graph/Out4.cs");
+        var rows = SelectedScopeRows(document);
+        Equal(5, rows.Count, "重複選択・重複辺を1ファイルへまとめる");
+        foreach (var path in new[] { "Graph/Seed.cs", "Graph/Out2.cs" })
+        {
+            Equal(0, rows[path].Hops, "明示選択は他の起点から距離があっても0段");
+            Equal("明示選択", rows[path].Selection, "明示選択を補足から区別する");
+        }
+        Equal(1, rows["Graph/Out3.cs"].Hops, "全起点からの最短距離を採用");
+        Equal(2, rows["Graph/Out4.cs"].Hops, "補足起点の次の段を展開");
+        Equal("関連による補足", rows["Graph/Out3.cs"].Selection, "自動追加を明示する");
+        True(document.Markdown.Contains("SOURCE_Seed") && document.Markdown.Contains("SOURCE_Out2"), "明示した複数ファイルの本文を含む");
+        True(!document.Markdown.Contains("SOURCE_Out1") && !document.Markdown.Contains("SOURCE_Out3") && !document.Markdown.Contains("SOURCE_Out4"), "深い関連でも補足の本文は自動追加しない");
+        return Task.CompletedTask;
+    }
+
+    private static async Task FeatureAnalyzedReferences()
+    {
+        using var fixture = new Fixture();
+        fixture.Write("Service.cs", "namespace Example; public partial class Service : Contract { /* PART_ONE_BODY */ }");
+        fixture.Write("Service.Part.cs", "namespace Example; public partial class Service { /* PART_TWO_BODY */ }");
+        fixture.Write("Contract.cs", "namespace Example; public class Contract { /* CONTRACT_BODY */ }");
+        fixture.Write("Consumer.cs", "namespace Example; public class Consumer : Service { /* CONSUMER_BODY */ }");
+        fixture.Write("Unrelated.cs", "namespace Example; public class Unrelated {}");
+        var result = await fixture.Analyze();
+        True(result.Relationships.Any(r => r.FromFile == "Service.cs" && r.ToFile == "Contract.cs"), "解析器が参照先への辺を生成");
+        True(result.Relationships.Any(r => r.FromFile == "Consumer.cs" && r.ToFile == "Service.Part.cs"), "部分型の各宣言へ参照を解決");
+        var generator = new ContextGenerator();
+        var outgoing = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Service.cs"], RelatedDirection = RelatedFileDirection.Outgoing });
+        AssertFileScope(result, outgoing, "Service.cs", "Contract.cs");
+        var incoming = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Service.cs"], RelatedDirection = RelatedFileDirection.Incoming });
+        AssertFileScope(result, incoming, "Service.cs", "Consumer.cs");
+        var partial = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedTypes = ["Example.Service"], RelatedDirection = RelatedFileDirection.Both, IncludeSource = true });
+        AssertFileScope(result, partial, "Service.cs", "Service.Part.cs", "Contract.cs", "Consumer.cs");
+        var rows = SelectedScopeRows(partial);
+        Equal(0, rows["Service.cs"].Hops, "型選択の1番目の宣言も起点");
+        Equal(0, rows["Service.Part.cs"].Hops, "部分型の別ファイルも明示起点");
+        True(partial.Markdown.Contains("PART_ONE_BODY") && partial.Markdown.Contains("PART_TWO_BODY"), "型の全定義ファイルの本文を含む");
+        True(!partial.Markdown.Contains("CONTRACT_BODY") && !partial.Markdown.Contains("CONSUMER_BODY"), "型選択でも関連本文は含まない");
+    }
+
+    private static Task FeatureOptionsValidation()
+    {
+        var result = RelationshipGraphFixture();
+        var generator = new ContextGenerator();
+        var valid = new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Graph/Seed.cs"] };
+        foreach (var depth in new[] { int.MinValue, -1, 0, 4, int.MaxValue })
+            Throws<ArgumentOutOfRangeException>(() => generator.Generate(result, valid with { RelatedDepth = depth }));
+        foreach (var direction in new[] { (RelatedFileDirection)(-1), (RelatedFileDirection)4, (RelatedFileDirection)int.MaxValue })
+            Throws<ArgumentOutOfRangeException>(() => generator.Generate(result, valid with { RelatedDirection = direction }));
+        Throws<ArgumentException>(() => generator.Generate(result, valid with { SelectedFiles = ["Graph/Missing.cs"] }));
+        // 設定は機能別資料にだけ適用し、概要・構造資料の既存呼び出しを妨げない。
+        foreach (var kind in new[] { ContextKind.Overview, ContextKind.Structure })
+            generator.Generate(result, new ContextOptions { Kind = kind, RelatedDepth = 0, RelatedDirection = (RelatedFileDirection)(-1) });
+        using var before = new CancellationTokenSource();
+        before.Cancel();
+        Throws<OperationCanceledException>(() => generator.Generate(result, valid, before.Token));
+        using var during = new CancellationTokenSource();
+        var cancelling = result with { Relationships = new CancellingRelationships(result.Relationships, during) };
+        Throws<OperationCanceledException>(() => generator.Generate(cancelling, valid with { RelatedDepth = 3 }, during.Token));
+        True(during.IsCancellationRequested, "関係の列挙が始まった後のキャンセルも伝播");
+        return Task.CompletedTask;
+    }
+
     private static Task MarkdownEscaping()
     {
         var source = "public class Worker { /* BODY_ONLY_123\n```\n``````\n# 偽物の見出し\n*/ }";
@@ -349,6 +525,62 @@ internal static class Program
             [new FileRelationship(path, "Contract.cs", "Inheritance", "IContract", "Estimated")], []);
     }
 
+    private static AnalysisResult RelationshipGraphFixture()
+    {
+        var files = new[] { "Seed", "Out1", "Out2", "Out3", "Out4", "In1", "In2", "In3", "In4", "Unrelated", "MissingBridgeTarget", "ProjectBridgeTarget" }
+            .Select(name => GraphFile($"Graph/{name}.cs")).ToArray();
+        FileRelationship Edge(string from, string to, string evidence, string kind = "Reference") =>
+            new($"Graph/{from}.cs", $"Graph/{to}.cs", kind, evidence, "Inferred");
+        return GraphResult(files,
+            [Edge("Seed", "Out1", "EDGE_OUT_0_1"), Edge("Out1", "Out2", "EDGE_OUT_1_2"), Edge("Out2", "Out3", "EDGE_OUT_2_3"), Edge("Out3", "Out4", "EDGE_OUT_3_4"),
+             Edge("In1", "Seed", "EDGE_IN_1_0"), Edge("In2", "In1", "EDGE_IN_2_1"), Edge("In3", "In2", "EDGE_IN_3_2"), Edge("In4", "In3", "EDGE_IN_4_3"),
+             Edge("Out2", "Out1", "EDGE_OUT_CYCLE"), Edge("In1", "In2", "EDGE_IN_CYCLE"), Edge("Seed", "Out1", "EDGE_DUPLICATE"), Edge("Seed", "Seed", "EDGE_SELF"),
+             Edge("Seed", "Missing", "EDGE_MISSING"), Edge("Missing", "MissingBridgeTarget", "EDGE_MISSING_BRIDGE"),
+             new FileRelationship("Graph/Seed.cs", "Graph/UnknownProject.csproj", "ProjectReferenceDeclaration", "EDGE_PROJECT_DECLARATION", "Confirmed"),
+             new FileRelationship("Graph/UnknownProject.csproj", "Graph/ProjectBridgeTarget.cs", "Reference", "EDGE_PROJECT_BRIDGE", "Inferred")],
+            [new AnalysisDiagnostic("Graph/Unrelated.cs", 1, "Info", "DIAG_UNRELATED")]);
+    }
+
+    private static SourceFileInfo GraphFile(string path)
+    {
+        var name = path.Replace('\\', '/').Split('/').Last().Replace(".cs", "", StringComparison.Ordinal);
+        var type = new TypeInfo(name, "FeatureGraph." + name, "FeatureGraph", "Class", "public", [], [], path, 1);
+        return new SourceFileInfo(path, Path.Combine(Path.GetTempPath(), path), "FeatureGraph", "C#", "fixture role", ["FeatureGraph"], [], [type], [], $"public class {name} {{ /* SOURCE_{name} */ }}");
+    }
+
+    private static AnalysisResult GraphResult(IReadOnlyList<SourceFileInfo> files, IReadOnlyList<FileRelationship> relationships, IReadOnlyList<AnalysisDiagnostic> diagnostics) =>
+        new("FeatureGraph", Path.GetTempPath(), [new ProjectInfo("FeatureGraph", "FeatureGraph.csproj", "net10.0", "Library", [], [])], files, relationships, diagnostics);
+
+    private static void AssertFileScope(AnalysisResult result, ContextDocument document, params string[] expected)
+    {
+        var expectedPaths = expected.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in result.Files)
+        {
+            var heading = "### " + file.RelativePath.Replace("\\", "\\\\") + Environment.NewLine;
+            Equal(expectedPaths.Contains(file.RelativePath), document.Markdown.Contains(heading, StringComparison.Ordinal), $"構造資料の範囲: {file.RelativePath}");
+        }
+    }
+
+    private static bool ContainsData(ContextDocument document, string text) =>
+        document.Markdown.Contains(text.Replace("_", "\\_"), StringComparison.Ordinal);
+
+    private static Dictionary<string, (string Selection, int Hops)> SelectedScopeRows(ContextDocument document)
+    {
+        var rows = new Dictionary<string, (string Selection, int Hops)>(StringComparer.OrdinalIgnoreCase);
+        var inSection = false;
+        foreach (var line in document.Markdown.Split('\n').Select(line => line.TrimEnd('\r')))
+        {
+            if (line == "## 選択範囲と関連ファイル") { inSection = true; continue; }
+            if (!inSection) continue;
+            if (line.StartsWith("## ", StringComparison.Ordinal)) break;
+            var cells = line.Split('|').Select(cell => cell.Trim()).ToArray();
+            if (cells.Length >= 5 && int.TryParse(cells[3], out var hops))
+                True(rows.TryAdd(cells[1], (cells[2], hops)), "同じファイルを範囲表へ重複掲載しない");
+        }
+        True(inSection, "選択と補足の内訳を示す節がある");
+        return rows;
+    }
+
     private static string ProjectXml(string framework, string extras = "", string? projectReference = null) =>
         $"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{framework}</TargetFramework>{extras}</PropertyGroup>" +
         (projectReference is null ? "" : $"<ItemGroup><ProjectReference Include=\"{projectReference}\" /></ItemGroup>") + "</Project>";
@@ -390,6 +622,21 @@ internal static class Program
     private sealed class InlineProgress<T>(Action<T> callback) : IProgress<T>
     {
         public void Report(T value) => callback(value);
+    }
+
+    private sealed class CancellingRelationships(IReadOnlyList<FileRelationship> relationships, CancellationTokenSource cancellation) : IReadOnlyList<FileRelationship>
+    {
+        public int Count => relationships.Count;
+        public FileRelationship this[int index] => relationships[index];
+        public IEnumerator<FileRelationship> GetEnumerator()
+        {
+            for (var index = 0; index < relationships.Count; index++)
+            {
+                if (index == 1) cancellation.Cancel();
+                yield return relationships[index];
+            }
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class Fixture : IDisposable

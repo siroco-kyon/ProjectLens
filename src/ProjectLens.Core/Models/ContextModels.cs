@@ -2,12 +2,15 @@ namespace ProjectLens.Core.Models;
 
 public enum ContextKind { Overview, Structure, Feature }
 public enum PromptPurpose { UnderstandProject, AnalyzeFeature, ImproveFeature, AssessImpact, Refactor, InvestigateBug }
+public enum RelatedFileDirection { None, Outgoing, Incoming, Both }
 public sealed record ContextOptions
 {
     public ContextKind Kind { get; init; } = ContextKind.Overview;
     public PromptPurpose Purpose { get; init; } = PromptPurpose.UnderstandProject;
     public IReadOnlyList<string> SelectedFiles { get; init; } = [];
     public IReadOnlyList<string> SelectedTypes { get; init; } = [];
+    public RelatedFileDirection RelatedDirection { get; init; } = RelatedFileDirection.Both;
+    public int RelatedDepth { get; init; } = 1;
     public bool IncludeSource { get; init; }
     public string Request { get; init; } = "";
     public int MaxPartCharacters { get; init; } = 12000;

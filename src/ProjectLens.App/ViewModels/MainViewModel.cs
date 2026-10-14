@@ -36,6 +36,8 @@ public sealed class MainViewModel : ObservableObject
     private string _outputDirectory = "";
     private bool _includeSource;
     private Choice<ContextKind> _selectedKind;
+    private Choice<RelatedFileDirection> _selectedRelatedDirection;
+    private Choice<int> _selectedRelatedDepth;
     private Choice<PromptPurpose> _selectedPurpose;
     private Choice<string> _selectedFormat;
     private ContextPart? _selectedPart;
@@ -48,6 +50,8 @@ public sealed class MainViewModel : ObservableObject
         _analyzer = analyzer;
         _interaction = interaction;
         _selectedKind = ContextKinds[0];
+        _selectedRelatedDirection = RelatedDirections[3];
+        _selectedRelatedDepth = RelatedDepths[0];
         _selectedPurpose = PromptPurposes[0];
         _selectedFormat = ExportFormats[0];
         TypesView = CollectionViewSource.GetDefaultView(TypeItems);
@@ -82,6 +86,10 @@ public sealed class MainViewModel : ObservableObject
      new("既存機能の改善案", PromptPurpose.ImproveFeature), new("新機能の影響範囲", PromptPurpose.AssessImpact),
      new("リファクタリング計画", PromptPurpose.Refactor), new("不具合の原因調査", PromptPurpose.InvestigateBug)];
     public IReadOnlyList<Choice<string>> ExportFormats { get; } = [new("Markdown (.md)", ".md"), new("テキスト (.txt)", ".txt")];
+    public IReadOnlyList<Choice<RelatedFileDirection>> RelatedDirections { get; } =
+    [new("選択したファイル・型のみ", RelatedFileDirection.None), new("参照先を補足", RelatedFileDirection.Outgoing),
+     new("参照元を補足", RelatedFileDirection.Incoming), new("両方向を補足", RelatedFileDirection.Both)];
+    public IReadOnlyList<Choice<int>> RelatedDepths { get; } = [new("1段", 1), new("2段", 2), new("3段", 3)];
 
     public ObservableCollection<TreeNode> TreeRoots { get; } = [];
     public ObservableCollection<FileItem> FileItems { get; } = [];
@@ -112,7 +120,7 @@ public sealed class MainViewModel : ObservableObject
     public bool IsBusy
     {
         get => _busy;
-        private set { if (Set(ref _busy, value)) { Raise(nameof(CanEdit)); RefreshCommands(); } }
+        private set { if (Set(ref _busy, value)) { Raise(nameof(CanEdit)); Raise(nameof(CanChooseRelatedDepth)); RefreshCommands(); } }
     }
     public bool CanEdit => !IsBusy;
     public bool ProgressIsIndeterminate { get => _indeterminate; private set => Set(ref _indeterminate, value); }
@@ -133,7 +141,25 @@ public sealed class MainViewModel : ObservableObject
             foreach (var view in new[] { TypesView, MembersView, FilesView, ProjectsView, RelationshipsView, DiagnosticsView }) view.Refresh();
         }
     }
-    public Choice<ContextKind> SelectedKind { get => _selectedKind; set { if (Set(ref _selectedKind, value)) InvalidatePreview(); } }
+    public Choice<ContextKind> SelectedKind
+    {
+        get => _selectedKind;
+        set
+        {
+            if (!Set(ref _selectedKind, value)) return;
+            Raise(nameof(IsFeatureContext));
+            Raise(nameof(CanChooseRelatedDepth));
+            InvalidatePreview();
+        }
+    }
+    public bool IsFeatureContext => SelectedKind.Value == ContextKind.Feature;
+    public bool CanChooseRelatedDepth => CanEdit && IsFeatureContext && SelectedRelatedDirection.Value != RelatedFileDirection.None;
+    public Choice<RelatedFileDirection> SelectedRelatedDirection
+    {
+        get => _selectedRelatedDirection;
+        set { if (Set(ref _selectedRelatedDirection, value)) { Raise(nameof(CanChooseRelatedDepth)); InvalidatePreview(); } }
+    }
+    public Choice<int> SelectedRelatedDepth { get => _selectedRelatedDepth; set { if (Set(ref _selectedRelatedDepth, value)) InvalidatePreview(); } }
     public Choice<PromptPurpose> SelectedPurpose { get => _selectedPurpose; set { if (Set(ref _selectedPurpose, value)) InvalidatePreview(); } }
     public string Request { get => _request; set { if (Set(ref _request, value)) InvalidatePreview(); } }
     public bool IncludeSource { get => _includeSource; set { if (Set(ref _includeSource, value)) InvalidatePreview(); } }
@@ -209,6 +235,8 @@ public sealed class MainViewModel : ObservableObject
                 Purpose = SelectedPurpose.Value,
                 SelectedFiles = FileItems.Where(f => f.InContext).Select(f => f.RelativePath).ToArray(),
                 SelectedTypes = TypeItems.Where(t => t.InContext).Select(t => t.FullName).Distinct().ToArray(),
+                RelatedDirection = SelectedRelatedDirection.Value,
+                RelatedDepth = SelectedRelatedDepth.Value,
                 IncludeSource = IncludeSource,
                 Request = Request.Trim(),
                 MaxPartCharacters = maxCharacters
@@ -431,6 +459,38 @@ public sealed class MainViewModel : ObservableObject
         await AnalyzeAsync();
         await GenerateAsync();
         if (_document is null || HasError) throw new InvalidOperationException("条件変更の検証後に資料を再生成できませんでした。");
+
+        // 関連範囲は生成条件。方向・段数の変更でコピーと保存を無効化し、再生成で復帰させる。
+        var originalOutput = OutputDirectory;
+        OutputDirectory = Path.Combine(Path.GetTempPath(), "ProjectLens.Smoke.Export");
+        SelectedKind = ContextKinds[2];
+        FileItems[0].InContext = true;
+        await GenerateAsync();
+        AssertFeaturePreviewGenerated();
+        SelectedRelatedDirection = RelatedDirections[1];
+        AssertPreviewInvalidated();
+        await GenerateAsync();
+        AssertFeaturePreviewGenerated();
+        SelectedRelatedDepth = RelatedDepths[1];
+        AssertPreviewInvalidated();
+        await GenerateAsync();
+        AssertFeaturePreviewGenerated();
+        SelectedRelatedDirection = RelatedDirections[0];
+        AssertPreviewInvalidated();
+        if (CanChooseRelatedDepth) throw new InvalidOperationException("選択のみで関連の段数を変更できてしまいます。");
+        await GenerateAsync();
+        AssertFeaturePreviewGenerated();
+        SelectedRelatedDirection = RelatedDirections[3];
+        await GenerateAsync();
+        AssertFeaturePreviewGenerated();
+        OutputDirectory = originalOutput;
+    }
+
+    private void AssertFeaturePreviewGenerated()
+    {
+        if (_document is null || HasError || !PreviewText.Contains("選択範囲と関連ファイル", StringComparison.Ordinal)
+            || !CopyCommand.CanExecute(null) || !ExportCommand.CanExecute(null))
+            throw new InvalidOperationException("関連範囲の設定後に資料・コピー・保存を利用できません。" + ErrorText);
     }
 
     private void AssertPreviewInvalidated()

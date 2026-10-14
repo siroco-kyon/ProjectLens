@@ -13,6 +13,13 @@ public sealed class ContextGenerator
         cancellationToken.ThrowIfCancellationRequested();
         if (options.MaxPartCharacters is < 1000 or > 1000000)
             throw new ArgumentOutOfRangeException(nameof(options), "分割文字数は1,000～1,000,000文字にしてください。");
+        if (options.Kind == ContextKind.Feature)
+        {
+            if (!Enum.IsDefined(options.RelatedDirection))
+                throw new ArgumentOutOfRangeException(nameof(options), "関連ファイルの補足方向が無効です。");
+            if (options.RelatedDepth is < 1 or > 3)
+                throw new ArgumentOutOfRangeException(nameof(options), "関連ファイルの補足深度は1～3段にしてください。");
+        }
 
         var selectedPaths = options.SelectedFiles.Select(Normalize).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var selectedTypes = options.SelectedTypes.ToHashSet(StringComparer.Ordinal);
@@ -21,24 +28,17 @@ public sealed class ContextGenerator
         if (options.Kind == ContextKind.Feature && explicitFiles.Length == 0)
             throw new ArgumentException("機能別資料にはファイルまたは型を選択してください。", nameof(options));
 
-        var scopePaths = explicitFiles.Select(f => f.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var explicitPaths = scopePaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (options.Kind == ContextKind.Feature)
-        {
-            // 直接関連するファイルを一段だけ補足する。推定を際限なくたどり範囲を広げない。
-            foreach (var edge in result.Relationships)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (explicitPaths.Contains(edge.FromFile))
-                    scopePaths.Add(edge.ToFile);
-                if (explicitPaths.Contains(edge.ToFile))
-                    scopePaths.Add(edge.FromFile);
-            }
-        }
+        var explicitPaths = explicitFiles.Select(f => Normalize(f.RelativePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var scopeHops = options.Kind == ContextKind.Feature
+            ? ExpandRelatedFiles(result, explicitPaths, options, cancellationToken)
+            : explicitPaths.ToDictionary(path => path, _ => 0, StringComparer.OrdinalIgnoreCase);
         var files = options.Kind == ContextKind.Feature
-            ? result.Files.Where(f => scopePaths.Contains(f.RelativePath)).ToArray() : result.Files.ToArray();
+            ? result.Files.Where(f => scopeHops.ContainsKey(Normalize(f.RelativePath))).ToArray() : result.Files.ToArray();
+        var relatedRange = options.RelatedDirection == RelatedFileDirection.None
+            ? "段数: 使用しない" : $"最大段数: {options.RelatedDepth}段";
         var scope = options.Kind == ContextKind.Feature
-            ? "選択: " + string.Join(", ", explicitFiles.Select(f => f.RelativePath)) + "（直接関連する構造を補足）"
+            ? "選択: " + string.Join(", ", explicitFiles.Select(f => f.RelativePath))
+                + $"（補足方向: {DirectionLabel(options.RelatedDirection)} / {relatedRange} / 選択: {explicitPaths.Count}件 / 補足: {scopeHops.Count - explicitPaths.Count}件 / 合計: {scopeHops.Count}件）"
             : "解析範囲内の全ファイル";
         var b = new StringBuilder();
         b.AppendLine($"# {Cell(result.ProjectName)} — Copilot用プロジェクト資料");
@@ -49,6 +49,21 @@ public sealed class ContextGenerator
         b.AppendLine("確定した宣言と推定の関連を区別し、根拠のパス・型・メンバーを示してください。情報が不足する場合は、確認すべきコードや再現条件を具体的に挙げてください。");
         if (!string.IsNullOrWhiteSpace(options.Request))
             b.AppendLine().AppendLine("### ユーザーの依頼").AppendLine(options.Request.Trim());
+
+        if (options.Kind == ContextKind.Feature)
+        {
+            b.AppendLine().AppendLine("## 選択範囲と関連ファイル");
+            b.AppendLine($"補足方向: {DirectionLabel(options.RelatedDirection)} / {relatedRange}。選択ファイル {explicitPaths.Count}件、補足ファイル {scopeHops.Count - explicitPaths.Count}件、合計 {scopeHops.Count}件。");
+            b.AppendLine("方向は構文とXAMLから得た関連の起点・関連先に従います。完全な変更影響範囲を証明するものではありません。解析対象に含まれるファイルだけを補足します。");
+            b.AppendLine("| パス | 選択・補足 | 選択からの最短段数 |")
+                .AppendLine("|---|---|---|");
+            foreach (var f in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var hops = scopeHops[Normalize(f.RelativePath)];
+                b.AppendLine($"| {Cell(f.RelativePath)} | {(hops == 0 ? "明示選択" : "関連による補足")} | {hops} |");
+            }
+        }
 
         b.AppendLine().AppendLine("## 解析の前提と制限");
         b.AppendLine("- Roslynによる構文解析です。メンバーの宣言・シグネチャは構文から抽出しています。");
@@ -107,20 +122,25 @@ public sealed class ContextGenerator
                 }
             }
         }
-        var fileSet = files.Select(f => f.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var fileSet = files.Select(f => Normalize(f.RelativePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         b.AppendLine().AppendLine("## ファイル間の関係");
         b.AppendLine("| 起点 | 関連先 | 種類 | 確度 | 根拠 |")
             .AppendLine("|---|---|---|---|---|");
-        foreach (var r in result.Relationships.Where(r => options.Kind != ContextKind.Feature || fileSet.Contains(r.FromFile) || fileSet.Contains(r.ToFile)))
+        var relationshipCount = 0;
+        foreach (var r in result.Relationships)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (options.Kind == ContextKind.Feature
+                && (!fileSet.Contains(Normalize(r.FromFile)) || !fileSet.Contains(Normalize(r.ToFile))))
+                continue;
+            relationshipCount++;
             b.AppendLine($"| {Cell(r.FromFile)} | {Cell(r.ToFile)} | {Cell(r.Kind)} | {(r.Confidence == "Confirmed" ? "宣言を確認（有効性未評価）" : "推定（未解決）")} | {Cell(r.Evidence)} |");
         }
-        if (result.Relationships.Count == 0) b.AppendLine("（範囲内の関連は検出されませんでした。依存がないことを保証するものではありません。）");
+        if (relationshipCount == 0) b.AppendLine("（範囲内の関連は検出されませんでした。依存がないことを保証するものではありません。）");
         b.AppendLine().AppendLine("## 診断・読み取り制限");
-        var diagnosticPaths = fileSet.Concat(result.Projects.Where(p => files.Any(f => f.ProjectName == p.Name)).Select(p => p.RelativePath))
+        var diagnosticPaths = fileSet.Concat(result.Projects.Where(p => files.Any(f => f.ProjectName == p.Name)).Select(p => Normalize(p.RelativePath)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var d in result.Diagnostics.Where(d => options.Kind != ContextKind.Feature || string.IsNullOrEmpty(d.FilePath) || diagnosticPaths.Contains(d.FilePath)))
+        foreach (var d in result.Diagnostics.Where(d => options.Kind != ContextKind.Feature || string.IsNullOrEmpty(d.FilePath) || diagnosticPaths.Contains(Normalize(d.FilePath))))
         {
             cancellationToken.ThrowIfCancellationRequested();
             b.AppendLine($"- {Cell(d.Severity)} {Cell(d.FilePath)}:{d.Line} — {Cell(d.Message)}");
@@ -145,6 +165,58 @@ public sealed class ContextGenerator
         var markdown = b.ToString();
         return new ContextDocument(result.ProjectName, scope, markdown, Split(result.ProjectName, scope, markdown, options.MaxPartCharacters, cancellationToken));
     }
+
+    private static Dictionary<string, int> ExpandRelatedFiles(AnalysisResult result, HashSet<string> explicitPaths,
+        ContextOptions options, CancellationToken cancellationToken)
+    {
+        var hops = explicitPaths.ToDictionary(path => path, _ => 0, StringComparer.OrdinalIgnoreCase);
+        if (options.RelatedDirection == RelatedFileDirection.None) return hops;
+
+        var knownPaths = result.Files.Select(f => Normalize(f.RelativePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var neighbors = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var edge in result.Relationships)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var from = Normalize(edge.FromFile);
+            var to = Normalize(edge.ToFile);
+            // csprojや外部参照は解析済みファイルのノードとして扱わず、そこから範囲を広げない。
+            if (!knownPaths.Contains(from) || !knownPaths.Contains(to)) continue;
+            if (options.RelatedDirection is RelatedFileDirection.Outgoing or RelatedFileDirection.Both)
+                AddNeighbor(from, to);
+            if (options.RelatedDirection is RelatedFileDirection.Incoming or RelatedFileDirection.Both)
+                AddNeighbor(to, from);
+        }
+
+        var queue = new Queue<string>(explicitPaths);
+        while (queue.TryDequeue(out var path))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var nextHop = hops[path] + 1;
+            if (nextHop > options.RelatedDepth || !neighbors.TryGetValue(path, out var related)) continue;
+            foreach (var next in related)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!hops.TryAdd(next, nextHop)) continue;
+                queue.Enqueue(next);
+            }
+        }
+        return hops;
+
+        void AddNeighbor(string from, string to)
+        {
+            if (!neighbors.TryGetValue(from, out var related))
+                neighbors[from] = related = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            related.Add(to);
+        }
+    }
+
+    private static string DirectionLabel(RelatedFileDirection direction) => direction switch
+    {
+        RelatedFileDirection.None => "補足なし",
+        RelatedFileDirection.Outgoing => "参照先（起点 → 関連先）",
+        RelatedFileDirection.Incoming => "参照元（関連先 → 起点）",
+        _ => "参照先と参照元（双方向）"
+    };
 
     private static IReadOnlyList<ContextPart> Split(string name, string scope, string markdown, int limit, CancellationToken cancellationToken)
     {
