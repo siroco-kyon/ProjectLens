@@ -75,6 +75,36 @@ public sealed record RelationshipItem(FileRelationship Relationship)
     public string Confidence => Relationship.Confidence;
 }
 
+public sealed record WebApiCallItem(WebApiCallInfo Call)
+{
+    public string FilePath => Call.FilePath;
+    public int Line => Call.Line;
+    public string Caller => string.Join(".", new[] { Call.TypeName, Call.MemberName }.Where(value => value.Length > 0));
+    public string Client => Call.Client;
+    public string HttpMethod => Call.HttpMethod;
+    public string Address => Call.Address;
+    public string RequestData => Call.RequestData;
+    public string ResponseType => Call.ResponseType;
+    public string Confidence => Labels.ApiConfidence(Call.Confidence);
+    public string Location => $"{FilePath}:{Line}";
+    public string RequestText => string.IsNullOrWhiteSpace(RequestData) ? "記述から特定できません。" : RequestData;
+    public string ResponseText => string.IsNullOrWhiteSpace(ResponseType) ? "記述から特定できません。" : ResponseType;
+    public IReadOnlyList<ApiProcessingInfo> Processing => Call.Processing;
+    public string ProcessingText => string.Join("\n", Processing.Select(item => $"{item.Kind} {item.Description}"));
+    public string ProcessingHint => Processing.Count == 0 ? "周辺処理の記述を検出できませんでした。" : "同じメソッド内などの記述です。各呼び出しとの対応は確認が必要です。";
+}
+
+public sealed record WebApiSettingItem(WebApiSettingInfo Setting)
+{
+    public string FilePath => Setting.FilePath;
+    public int Line => Setting.Line;
+    public string Kind => Setting.Kind;
+    public string Key => Setting.Key;
+    public string Value => Setting.Value;
+    public string Confidence => Labels.ApiConfidence(Setting.Confidence);
+    public string Location => $"{FilePath}:{Line}";
+}
+
 public sealed class TreeNode(string name, string path, FileItem? file = null)
 {
     public string Name { get; } = name;
@@ -88,6 +118,11 @@ public sealed class TreeNode(string name, string path, FileItem? file = null)
 
 internal static class Labels
 {
+    public static string ApiConfidence(string confidence) => confidence switch
+    {
+        "Declared" => "設定記述", "Inferred" => "構文候補", _ => "要確認"
+    };
+
     public static string MemberKind(string kind) => kind switch
     {
         "Class" => "クラス", "Record" => "レコード", "Struct" => "構造体",

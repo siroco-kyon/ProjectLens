@@ -31,6 +31,11 @@ public partial class App : Application
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             var sample = ArgumentValue(e.Args, "--sample") ?? ArgumentValue(e.Args, "--input");
             if (sample is not null) await smokeWindow.ViewModel.RunSmokeTestAsync(sample);
+            if (smokeWindow.ViewModel.WebApiCallItems.Count > 0 || smokeWindow.ViewModel.WebApiSettingItems.Count > 0)
+            {
+                smokeWindow.WebApiTab.IsSelected = true;
+                smokeWindow.WebApiSettingsTab.IsSelected = smokeWindow.ViewModel.WebApiCallItems.Count == 0;
+            }
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             var originalWidth = smokeWindow.Width;
             var originalHeight = smokeWindow.Height;
@@ -38,9 +43,13 @@ public partial class App : Application
             smokeWindow.Height = smokeWindow.MinHeight;
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             smokeWindow.MainContent.UpdateLayout();
+            Console.Out.WriteLine($"WPF WebAPI layout: calls={smokeWindow.WebApiCallsGrid.ActualHeight:0}, area={((FrameworkElement)smokeWindow.WebApiCallsGrid.Parent).ActualHeight:0}, selected={smokeWindow.WebApiTab.IsSelected}, settings={smokeWindow.WebApiSettingsTab.IsSelected}");
             if (smokeWindow.PreviewBox.ActualHeight < 60 || smokeWindow.ContextSettingsScroll.ViewportHeight < 30
                 || smokeWindow.GenerateButton.ActualHeight < 25)
                 throw new InvalidOperationException("最小ウィンドウサイズで設定・生成・プレビューの表示領域が不足しています。");
+            if (smokeWindow.ViewModel.WebApiCallItems.Count > 0
+                && (smokeWindow.WebApiCallsGrid.ActualHeight < 65 || smokeWindow.WebApiProcessingScroll.ViewportHeight < 20))
+                throw new InvalidOperationException("最小ウィンドウサイズでWebAPI呼び出し一覧の表示領域が不足しています。");
             smokeWindow.Width = originalWidth;
             smokeWindow.Height = originalHeight;
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
