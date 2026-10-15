@@ -116,9 +116,14 @@ internal static class SyntaxAnalyzer
         }
 
         if (declarations.Any(d => d.Type.Namespace.Length == 0)) namespaces.Add("(global)");
+        var webApi = WebApiAnalyzer.AnalyzeCSharp(root, relativePath, cancellationToken);
         var file = new SourceFileInfo(relativePath, fullPath, projectName, "CSharp", RoleHint(relativePath, declarations.Select(d => d.Type)),
             namespaces.Order(StringComparer.Ordinal).ToArray(), usings.Order(StringComparer.Ordinal).ToArray(),
-            declarations.Select(d => d.Type).ToArray(), diagnostics, text);
+            declarations.Select(d => d.Type).ToArray(), diagnostics, text)
+        {
+            WebApiSettings = webApi.Settings,
+            WebApiCalls = webApi.Calls
+        };
         return new ParsedSource(file, declarations, references.OrderBy(r => r.Key, StringComparer.Ordinal).ThenBy(r => r.Kind).ToArray(),
             imports.ToArray(), aliases);
     }
@@ -139,7 +144,7 @@ internal static class SyntaxAnalyzer
             ".cs" => "役割未整理: C#ソース",
             ".razor" or ".cshtml" => "推定: Web画面・テンプレート",
             ".resx" => "推定: リソース定義",
-            ".json" or ".config" or ".xml" => "推定: 設定・データ定義",
+            ".json" or ".config" or ".xml" or ".settings" => "推定: 設定・データ定義",
             _ => "役割未整理"
         };
     }

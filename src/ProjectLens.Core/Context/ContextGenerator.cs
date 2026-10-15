@@ -97,6 +97,8 @@ public sealed class ContextGenerator
             b.AppendLine($"| {Cell(f.RelativePath)} | {Cell(f.ProjectName)} | {Cell(f.Kind)} | {Cell(f.RoleHint)} |");
         }
 
+        AppendWebApi(b, files, options.Kind != ContextKind.Overview, cancellationToken);
+
         b.AppendLine().AppendLine(options.Kind == ContextKind.Overview ? "## 主要型一覧（解析範囲の全宣言）" : "## コード構造");
         foreach (var f in files)
         {
@@ -165,6 +167,61 @@ public sealed class ContextGenerator
         var markdown = b.ToString();
         return new ContextDocument(result.ProjectName, scope, markdown, Split(result.ProjectName, scope, markdown, options.MaxPartCharacters, cancellationToken));
     }
+
+    private static void AppendWebApi(StringBuilder b, IReadOnlyList<SourceFileInfo> files, bool includeProcessing,
+        CancellationToken cancellationToken)
+    {
+        // C の関連補足後の範囲だけを使う。範囲外の設定や通信処理を自動で資料に追加しない。
+        var paths = files.Select(f => Normalize(f.RelativePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var settings = files.SelectMany(f => f.WebApiSettings).Where(s => paths.Contains(Normalize(s.FilePath))).ToArray();
+        var calls = files.SelectMany(f => f.WebApiCalls).Where(c => paths.Contains(Normalize(c.FilePath))).ToArray();
+        b.AppendLine().AppendLine("## WebAPI の接続設定と通信処理");
+        b.AppendLine("HTTPクライアントの型・メソッド名・式から抽出した構文上の候補です。実際の通信、実行時のURL、DI・共通ハンドラーの適用、業務上の意味は未確認です。設定一覧と通信一覧の対応も自動で確定しません。");
+        b.AppendLine("式の要約と根拠行を含みます。認証ヘッダーの値や機密キーは要約から伏せますが、全ソース本文を明示的に含めた場合はその本文を加工しません。");
+        b.AppendLine().AppendLine("### 接続設定の記述・候補");
+        if (settings.Length == 0) b.AppendLine("（対象範囲では接続設定の候補を検出していません。）");
+        else
+        {
+            b.AppendLine("| 設定方法 | キー・設定先 | 値・参照式 | 根拠ファイル | 行 | 確度 |")
+                .AppendLine("|---|---|---|---|---|---|");
+            foreach (var setting in settings)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                b.AppendLine($"| {Cell(setting.Kind)} | {Cell(setting.Key)} | {Cell(setting.Value)} | {Cell(setting.FilePath)} | {setting.Line} | {ApiConfidence(setting.Confidence)} |");
+            }
+        }
+        b.AppendLine().AppendLine("### API 呼び出しの候補");
+        if (calls.Length == 0) b.AppendLine("（対象範囲では対応するHTTP呼び出しを検出していません。通信がないことを保証するものではありません。）");
+        else
+        {
+            b.AppendLine("| 呼び出し元 | クライアント | HTTP | 接続先・パスの式 | 送信データの式 | 応答の型・読み込み | 根拠ファイル | 行 | 確度 |")
+                .AppendLine("|---|---|---|---|---|---|---|---|---|");
+            foreach (var call in calls)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                b.AppendLine($"| {Cell(call.TypeName + "." + call.MemberName)} | {Cell(call.Client)} | {Cell(call.HttpMethod)} | {Cell(call.Address)} | {Cell(call.RequestData)} | {Cell(call.ResponseType)} | {Cell(call.FilePath)} | {call.Line} | {ApiConfidence(call.Confidence)} |");
+            }
+            if (includeProcessing)
+            {
+                foreach (var call in calls)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    b.AppendLine().AppendLine($"#### {Cell(call.MemberName)} — {Cell(call.FilePath)}:{call.Line}");
+                    b.AppendLine("同じメソッド内で取得した処理の候補です。別メソッドや画面までの完全な処理追跡は行っていません。");
+                    b.AppendLine("| 観点 | 処理の記述・候補 | 根拠行 |")
+                        .AppendLine("|---|---|---|");
+                    foreach (var processing in call.Processing)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        b.AppendLine($"| {Cell(processing.Kind)} | {Cell(processing.Description)} | {processing.Line} |");
+                    }
+                    if (call.Processing.Count == 0) b.AppendLine("（送受信以外の処理は未検出です。）");
+                }
+            }
+        }
+    }
+
+    private static string ApiConfidence(string confidence) => confidence == "Declared" ? "設定への記述を確認（実行時は未評価）" : "構文上の候補（未解決）";
 
     private static Dictionary<string, int> ExpandRelatedFiles(AnalysisResult result, HashSet<string> explicitPaths,
         ContextOptions options, CancellationToken cancellationToken)

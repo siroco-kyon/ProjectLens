@@ -25,6 +25,12 @@ internal static class Program
             ("日本語パス・UTF-8・CP932", JapaneseEncoding),
             ("解析前と解析途中のキャンセル", Cancellation),
             ("400 ファイルと元ファイルのハッシュ維持", ManyFilesReadOnly),
+            ("WebAPI の JSON・XML 接続設定と根拠行", WebApiConfigurationSettings),
+            ("WebAPI のコード・環境変数による接続設定", WebApiCodeSettings),
+            ("WebAPI の送信内容・JSON 応答・エラー処理", WebApiRequestsAndProcessing),
+            ("WebAPI の複数応答を混ぜずコメント・同名 API を除外", WebApiFlowIsolation),
+            ("WebAPI の壊れた設定・キャンセル・読み取り専用", WebApiMalformedAndReadOnly),
+            ("WebAPI 資料の選択範囲・Markdown・機密値", WebApiContextSafety),
             ("概要・構造・6 用途の指示文", ContextKindsAndPrompts),
             ("機能選択とソース本文の明示 opt-in", FeatureAndSource),
             ("関連範囲の既定値と選択ファイルのみ", FeatureSelectionDefaults),
@@ -231,6 +237,336 @@ internal static class Program
         var after = fixture.Hashes();
         Equal(before.Count, after.Count, "ファイルを追加・削除しない");
         foreach (var (path, hash) in before) Equal(hash, after[path], $"変更なし: {path}");
+    }
+
+    private static async Task WebApiConfigurationSettings()
+    {
+        using var fixture = new Fixture();
+        var json = """
+            {
+              // 配布時に切り替える接続先
+              "OrdersApi": {
+                "BaseUrl": "https://orders.example.invalid/api/",
+              },
+              "TimeoutSeconds": 20
+            }
+            """;
+        var xml = """
+            <configuration>
+              <appSettings>
+                <add key="LegacyApiUrl" value="https://legacy.example.invalid/v1/" />
+              </appSettings>
+              <applicationSettings>
+                <Example.Properties.Settings>
+                  <setting name="CatalogServiceUrl" serializeAs="String">
+                    <value>https://catalog.example.invalid/v2/</value>
+                  </setting>
+                </Example.Properties.Settings>
+              </applicationSettings>
+            </configuration>
+            """;
+        fixture.Write("appsettings.json", json);
+        fixture.Write("App.config", xml);
+        var result = await fixture.Analyze();
+        var nested = result.WebApiSettings.Single(s => s.FilePath == "appsettings.json" && s.Key == "OrdersApi:BaseUrl");
+        True(nested.Value.Contains("https://orders.example.invalid/api/"), "JSON の入れ子の接続先値を抽出");
+        Equal(SourceLine(json, "\"BaseUrl\""), nested.Line, "JSON のキーの根拠行");
+        Equal("Declared", nested.Confidence, "設定ファイルの値は宣言として表示");
+        var legacy = result.WebApiSettings.Single(s => s.FilePath == "App.config" && s.Key == "LegacyApiUrl");
+        True(legacy.Value.Contains("https://legacy.example.invalid/v1/"), "appSettings の接続先");
+        Equal(SourceLine(xml, "<add key="), legacy.Line, "XML の add 宣言の根拠行");
+        var catalog = result.WebApiSettings.Single(s => s.FilePath == "App.config" && s.Key == "CatalogServiceUrl");
+        True(catalog.Value.Contains("https://catalog.example.invalid/v2/"), "Settings の name / value を対応付ける");
+        Equal(SourceLine(xml, "<setting name="), catalog.Line, "XML の setting 宣言の根拠行");
+        Equal(result.Files.Sum(f => f.WebApiSettings.Count), result.WebApiSettings.Count, "全体の設定一覧はファイル別結果の集約");
+        True(!result.WebApiSettings.Any(s => s.Key == "TimeoutSeconds"), "一般の数値設定を接続先に混入しない");
+        True(result.WebApiSettings.All(s => s.Line > 0 && !string.IsNullOrWhiteSpace(s.Kind)), "設定方式と 1 起点の根拠行を保持");
+    }
+
+    private static async Task WebApiCodeSettings()
+    {
+        using var fixture = new Fixture();
+        var source = """
+            using System;
+            using System.Net.Http;
+            using Microsoft.Extensions.Configuration;
+            public class ConfiguredApi
+            {
+                private readonly HttpClient _client;
+                public ConfiguredApi(HttpClient client, IConfiguration configuration)
+                {
+                    _client = client;
+                    _client.BaseAddress = new Uri(configuration["OrdersApi:BaseUrl"]);
+                }
+                public void FromEnvironment()
+                {
+                    _client.BaseAddress = new Uri(Environment.GetEnvironmentVariable("ORDERS_API_URL"));
+                }
+                public void FromLiteral()
+                {
+                    _client.BaseAddress = new Uri("https://fixed.example.invalid/api/");
+                }
+            }
+            """;
+        fixture.Write("ConfiguredApi.cs", source);
+        var result = await fixture.Analyze();
+        True(result.WebApiSettings.Any(s => s.Value.Contains("OrdersApi:BaseUrl") || s.Key.Contains("OrdersApi:BaseUrl")), "構成キーを参照する接続先設定");
+        True(result.WebApiSettings.Any(s => s.Value.Contains("ORDERS_API_URL") || s.Key.Contains("ORDERS_API_URL")), "環境変数名を保持し実行時の値を捏造しない");
+        var literal = result.WebApiSettings.First(s => s.Value.Contains("https://fixed.example.invalid/api/"));
+        Equal(SourceLine(source, "_client.BaseAddress = new Uri(\"https://fixed"), literal.Line, "BaseAddress 代入の行");
+        True(result.WebApiSettings.All(s => s.FilePath == "ConfiguredApi.cs" && !string.IsNullOrWhiteSpace(s.Confidence)), "コード設定にもファイルと確度を付ける");
+    }
+
+    private static async Task WebApiRequestsAndProcessing()
+    {
+        using var fixture = new Fixture();
+        var source = """
+            using System;
+            using System.Net.Http;
+            using System.Net.Http.Json;
+            using System.Threading;
+            using System.Threading.Tasks;
+            public class OrdersApi
+            {
+                private readonly HttpClient _http;
+                public OrdersApi(HttpClient http) { _http = http; }
+                public async Task<Order> Load(int id)
+                {
+                    var response = await _http.GetAsync($"orders/{id}");
+                    response.EnsureSuccessStatusCode();
+                    var order = await response.Content.ReadFromJsonAsync<Order>();
+                    return order;
+                }
+                public async Task<string> Create(Order payload)
+                {
+                    try
+                    {
+                        var response = await _http.PostAsJsonAsync("orders", payload);
+                        if (!response.IsSuccessStatusCode) throw new InvalidOperationException("登録失敗");
+                        var body = await response.Content.ReadAsStringAsync();
+                        return body;
+                    }
+                    catch (HttpRequestException)
+                    {
+                        throw;
+                    }
+                }
+                public Task<Order[]> List() => _http.GetFromJsonAsync<Order[]>("orders");
+                public async Task<string> Patch(Order payload)
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Patch, "orders/42");
+                    request.Content = JsonContent.Create(payload);
+                    var response = await _http.SendAsync(request);
+                    return await response.Content.ReadAsStringAsync();
+                }
+                public async Task NamedArgs(Order payload, CancellationToken ct)
+                {
+                    await _http.PostAsJsonAsync(value: payload, requestUri: "orders");
+                    await _http.GetAsync(cancellationToken: ct, requestUri: "search");
+                }
+                public async Task NamedRequest(Order payload, CancellationToken ct)
+                {
+                    using var message = new HttpRequestMessage(requestUri: "patch", method: HttpMethod.Patch)
+                        { Content = JsonContent.Create(payload) };
+                    await _http.SendAsync(cancellationToken: ct, request: message);
+                }
+            }
+            public record Order(int Id);
+            """;
+        fixture.Write("OrdersApi.cs", source);
+        var result = await fixture.Analyze();
+        Equal(7, result.WebApiCalls.Count, "通常・名前付き引数の HttpClient 通信を抽出");
+        var load = result.WebApiCalls.Single(c => c.MemberName == "Load");
+        Equal("GET", load.HttpMethod, "GetAsync の HTTP メソッド");
+        True(load.Address.Contains("orders/{id}"), "補間文字列の要求パスを保持");
+        True(load.ResponseType.Contains("Order"), "応答変換先の DTO 型");
+        True(load.Processing.Any(p => p.Description.Contains("EnsureSuccessStatusCode")), "成功コード確認の根拠");
+        True(load.Processing.Any(p => p.Kind.Contains("JSON") && p.Line == SourceLine(source, "var order = await response.Content.ReadFromJsonAsync")), "応答の JSON 変換の根拠行");
+        True(load.Processing.Any(p => p.Kind.Contains("戻り値")), "応答データを呼び出し元へ返す処理");
+        Equal(SourceLine(source, "var response = await _http.GetAsync"), load.Line, "呼び出しの行番号");
+        var create = result.WebApiCalls.Single(c => c.MemberName == "Create");
+        Equal("POST", create.HttpMethod, "PostAsJsonAsync の HTTP メソッド");
+        True(create.RequestData.Contains("payload"), "送信データの式");
+        True(create.Processing.Any(p => p.Description.Contains("IsSuccessStatusCode")), "失敗時のステータス分岐");
+        True(create.Processing.Any(p => p.Description.Contains("HttpRequestException") || p.Kind.Contains("例外")), "送信を囲む例外処理");
+        var list = result.WebApiCalls.Single(c => c.MemberName == "List");
+        Equal("GET", list.HttpMethod, "GetFromJsonAsync の HTTP メソッド");
+        True(list.ResponseType.Contains("Order[]"), "直接 JSON 呼び出しの配列型");
+        var patch = result.WebApiCalls.Single(c => c.MemberName == "Patch");
+        Equal("PATCH", patch.HttpMethod, "HttpRequestMessage のメソッドを SendAsync へ対応付ける");
+        True(patch.Address.Contains("orders/42"), "HttpRequestMessage のパス");
+        True(patch.RequestData.Contains("payload"), "RequestMessage.Content の送信データ");
+        var namedPost = result.WebApiCalls.Single(c => c.MemberName == "NamedArgs" && c.HttpMethod == "POST");
+        True(namedPost.Address.Contains("orders") && !namedPost.Address.Contains("payload"), "並べ替えた requestUri 引数を POST のパスとして読む");
+        True(namedPost.RequestData.Contains("payload"), "並べ替えた value 引数を POST の送信データとして読む");
+        var namedGet = result.WebApiCalls.Single(c => c.MemberName == "NamedArgs" && c.HttpMethod == "GET");
+        True(namedGet.Address.Contains("search") && !namedGet.Address.Contains("ct"), "キャンセルトークンを GET のパスと取り違えない");
+        var namedRequest = result.WebApiCalls.Single(c => c.MemberName == "NamedRequest");
+        Equal("PATCH", namedRequest.HttpMethod, "並べ替えた RequestMessage の method 引数");
+        True(namedRequest.Address.Contains("patch") && !namedRequest.Address.Contains("ct"), "SendAsync の request 引数を名前で対応付ける");
+        True(namedRequest.RequestData.Contains("payload"), "名前付き RequestMessage にも Content を対応付ける");
+        True(result.WebApiCalls.All(c => c.FilePath == "OrdersApi.cs" && c.TypeName.Contains("OrdersApi") && c.Client.Contains("_http") && c.Line > 0 && !string.IsNullOrWhiteSpace(c.Confidence)), "通信のクラス・クライアント・位置・確度");
+        True(result.WebApiCalls.SelectMany(c => c.Processing).All(p => p.Line > 0), "処理内容にも根拠行を持つ");
+    }
+
+    private static async Task WebApiFlowIsolation()
+    {
+        using var fixture = new Fixture();
+        fixture.Write("PairApi.cs", """
+            using System.Net.Http;
+            using System.Net.Http.Json;
+            using System.Threading.Tasks;
+            public class PairApi
+            {
+                private readonly HttpClient _client = new HttpClient();
+                public async Task<object> Load()
+                {
+                    // _client.GetAsync("comment-only");
+                    var note = "_client.PostAsync(\"string-only\", content)";
+                    var first = await _client.GetAsync("first");
+                    first.EnsureSuccessStatusCode();
+                    var firstData = await first.Content.ReadFromJsonAsync<FirstDto>();
+                    var second = await _client.GetAsync("second");
+                    var secondData = await second.Content.ReadFromJsonAsync<SecondDto>();
+                    return new { firstData, secondData };
+                }
+                public Task<string> Cache(Cache cache) => cache.GetAsync("cache-only");
+            }
+            public class Cache { public Task<string> GetAsync(string key) => null; }
+            public class FirstDto {}
+            public class SecondDto {}
+            """);
+        var result = await fixture.Analyze();
+        Equal(2, result.WebApiCalls.Count, "コメント・文字列・独自 GetAsync を通信と扱わない");
+        var first = result.WebApiCalls.Single(c => c.Address.Contains("first"));
+        var second = result.WebApiCalls.Single(c => c.Address.Contains("second"));
+        True(first.ResponseType.Contains("FirstDto") && !first.ResponseType.Contains("SecondDto"), "1 件目の応答型に 2 件目を混ぜない");
+        True(second.ResponseType.Contains("SecondDto") && !second.ResponseType.Contains("FirstDto"), "2 件目の応答型に 1 件目を混ぜない");
+        True(first.Processing.Any(p => p.Description.Contains("EnsureSuccessStatusCode")), "1 件目のステータス確認");
+        True(!second.Processing.Any(p => p.Description.Contains("EnsureSuccessStatusCode")), "1 件目のステータス確認を 2 件目へ転記しない");
+        True(!first.Processing.Any(p => p.Description.Contains("SecondDto")) && !second.Processing.Any(p => p.Description.Contains("FirstDto")), "別の応答変換を混ぜない");
+        using var shadows = new Fixture();
+        shadows.Write("ShadowedClients.cs", """
+            using System.Net.Http;
+            using System.Threading.Tasks;
+            public class CacheBase { protected Cache client = new Cache(); }
+            public class HttpField : CacheBase
+            {
+                private readonly HttpClient client = new HttpClient();
+                public async Task Work(Cache client)
+                {
+                    await this.client.GetAsync("HTTP_FIELD");
+                    await client.GetAsync("CACHE_PARAMETER");
+                    await base.client.GetAsync("BASE_CACHE");
+                }
+            }
+            public class CacheField
+            {
+                private readonly Cache client = new Cache();
+                public async Task Work(HttpClient client)
+                {
+                    await client.GetAsync("HTTP_PARAMETER");
+                    await this.client.GetAsync("CACHE_FIELD");
+                }
+            }
+            public class Cache { public Task<string> GetAsync(string key) => Task.FromResult(key); }
+            """);
+        var shadowed = await shadows.Analyze();
+        Equal(2, shadowed.WebApiCalls.Count, "this 指定と同名引数の解決で通信を誤検出・重複しない");
+        True(shadowed.WebApiCalls.Any(c => c.TypeName == "HttpField" && c.Address == "HTTP_FIELD" && c.Client == "this.client"), "HttpClient フィールドは Cache 引数に隠れていても this で識別する");
+        True(shadowed.WebApiCalls.Any(c => c.TypeName == "CacheField" && c.Address == "HTTP_PARAMETER" && c.Client == "client"), "HttpClient 引数は同名 Cache フィールドと区別する");
+        True(!shadowed.WebApiCalls.Any(c => c.Address is "CACHE_PARAMETER" or "CACHE_FIELD" or "BASE_CACHE"), "引数・フィールド・base の Cache 呼び出しを通信に混入しない");
+    }
+
+    private static async Task WebApiMalformedAndReadOnly()
+    {
+        using var fixture = new Fixture();
+        fixture.Write("appsettings.json", "{\n  \"ApiUrl\": \"https://broken.example.invalid/\",\n");
+        fixture.Write("App.config", "<configuration>\n<appSettings><add key=\"ApiUrl\" value=\"https://broken.example.invalid/\"></appSettings>");
+        fixture.Write("GoodApi.cs", "using System.Net.Http; public class GoodApi { public void Go(HttpClient client) { client.GetAsync(\"https://good.example.invalid/\"); } }");
+        var before = fixture.Hashes();
+        var result = await fixture.Analyze();
+        True(result.Diagnostics.Any(d => d.FilePath == "appsettings.json" && d.Line > 0), "JSON の構文不正を診断に残す");
+        True(result.Diagnostics.Any(d => d.FilePath == "App.config" && d.Line > 0), "XML の構文不正を診断に残す");
+        Equal(1, result.WebApiCalls.Count, "設定ファイルが壊れていてもコードの通信解析を継続");
+        var after = fixture.Hashes();
+        Equal(before.Count, after.Count, "WebAPI 解析で対象ファイル数を変更しない");
+        foreach (var (path, hash) in before) Equal(hash, after[path], $"WebAPI 解析は読み取り専用: {path}");
+        using var cancelled = new CancellationTokenSource();
+        var progress = new InlineProgress<AnalysisProgress>(p => { if (p.Completed >= 1) cancelled.Cancel(); });
+        await ThrowsAsync<OperationCanceledException>(() => fixture.Analyze(progress: progress, cancellationToken: cancelled.Token));
+    }
+
+    private static async Task WebApiContextSafety()
+    {
+        var fixture = ContextFixture();
+        var worker = fixture.Files[0] with
+        {
+            WebApiSettings = [new WebApiSettingInfo("Worker.cs", "JSON", "API|[Key]", "https://visible.example.invalid/|[path]", 3, "Declared")],
+            WebApiCalls = [new WebApiCallInfo("Worker.cs", "Example.Worker", "Run", "client|[name]", "GET", "items|[path]", "payload|[value]", "Dto|[name]",
+                [new ApiProcessingInfo("処理|[種別]", "結果|[説明]", 8)], 5, "Inferred")]
+        };
+        var contract = fixture.Files[1] with
+        {
+            WebApiSettings = [new WebApiSettingInfo("Contract.cs", "JSON", "UNRELATED_API_KEY", "https://unrelated.example.invalid/", 2, "Declared")],
+            WebApiCalls = [new WebApiCallInfo("Contract.cs", "Example.IContract", "Run", "otherClient", "POST", "UNRELATED_API_PATH", "", "", [], 3, "Inferred")]
+        };
+        var result = fixture with { Files = [worker, contract] };
+        var generator = new ContextGenerator();
+        var selected = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Worker.cs"], RelatedDirection = RelatedFileDirection.None });
+        True(selected.Markdown.Contains("## WebAPI の接続設定と通信処理"), "WebAPI 資料の節");
+        True(selected.Markdown.Contains("https://visible.example.invalid/\\|\\[path\\]"), "接続先の Markdown 記号をエスケープ");
+        foreach (var expected in new[] { "API\\|\\[Key\\]", "client\\|\\[name\\]", "items\\|\\[path\\]", "payload\\|\\[value\\]", "Dto\\|\\[name\\]", "処理\\|\\[種別\\]", "結果\\|\\[説明\\]" })
+            True(selected.Markdown.Contains(expected), $"WebAPI のデータ由来のセルをエスケープ: {expected}");
+        True(!selected.Markdown.Contains("unrelated.example.invalid") && !selected.Markdown.Contains("UNRELATED\\_API"), "選択範囲外の設定・通信を資料へ漏らさない");
+        True(!selected.Markdown.Contains("BODY_ONLY_123"), "WebAPI 資料でも本文は明示 opt-in");
+        var related = generator.Generate(result, new ContextOptions { Kind = ContextKind.Feature, SelectedFiles = ["Worker.cs"], RelatedDirection = RelatedFileDirection.Outgoing });
+        True(related.Markdown.Contains("unrelated.example.invalid"), "関連範囲に含むファイルの設定も掲載");
+        using var secretFixture = new Fixture();
+        secretFixture.Write("appsettings.json", "{\"ApiUrl\":\"https://secure.example.invalid/api?access_token=CONFIG_SECRET\"}");
+        secretFixture.Write("SecretsApi.cs", """
+            using System.Net.Http;
+            using System.Net.Http.Headers;
+            using System.Net.Http.Json;
+            public class SecretsApi
+            {
+                public void Send(HttpClient client)
+                {
+                    // BODY_ONLY_SECRET_FIXTURE
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "AUTH_SECRET");
+                    client.PostAsJsonAsync("https://secure.example.invalid/items?api_key=URL_SECRET", new { Password = "BODY_SECRET", Name = "sample" });
+                }
+                public void ReadWithExpressions(HttpClient client, int id)
+                {
+                    client.GetAsync($"orders?api_key=INTERP_SECRET&id={id}");
+                    client.GetAsync("orders?api_key=" + "CONCAT_SECRET");
+                    client.GetAsync("orders?api%5Fkey=" + "ENCODED_CONCAT_SECRET");
+                }
+            }
+            """);
+        var secrets = await secretFixture.Analyze();
+        Equal(4, secrets.WebApiCalls.Count, "マスキング検証用の通常・補間・連結・エンコードされた通信を抽出できている");
+        True(secrets.WebApiCalls.Single(c => c.MemberName == "Send").Processing.Any(p => p.Kind.Contains("ヘッダー") || p.Kind.Contains("認証")), "認証ヘッダーの設定が処理の根拠として表示される");
+        True(secrets.WebApiSettings.Any(s => s.Value.Contains("secure.example.invalid")), "マスキングで接続先情報すべてを失わない");
+        var metadata = string.Join("\n", secrets.WebApiSettings.Select(s => s.Value)
+            .Concat(secrets.WebApiCalls.Select(c => c.Address + " " + c.RequestData))
+            .Concat(secrets.WebApiCalls.SelectMany(c => c.Processing).Select(p => p.Description)));
+        foreach (var secret in new[] { "CONFIG_SECRET", "AUTH_SECRET", "URL_SECRET", "BODY_SECRET", "INTERP_SECRET", "CONCAT_SECRET", "ENCODED_CONCAT_SECRET" })
+            True(!metadata.Contains(secret), $"UI が使う抽出情報にも機密値を含めない: {secret}");
+        foreach (var kind in new[] { ContextKind.Overview, ContextKind.Structure })
+        {
+            var document = generator.Generate(secrets, new ContextOptions { Kind = kind });
+            foreach (var secret in new[] { "CONFIG_SECRET", "AUTH_SECRET", "URL_SECRET", "BODY_SECRET", "INTERP_SECRET", "CONCAT_SECRET", "ENCODED_CONCAT_SECRET", "BODY_ONLY_SECRET_FIXTURE" })
+                True(!document.Markdown.Contains(secret) && !document.Markdown.Contains(secret.Replace("_", "\\_")), $"{kind} の自動資料に機密値・本文を含めない: {secret}");
+            True(document.Markdown.Contains("secure.example.invalid"), "マスクした自動資料にも接続先のホストを残す");
+        }
+    }
+
+    private static int SourceLine(string source, string marker)
+    {
+        var offset = source.IndexOf(marker, StringComparison.Ordinal);
+        True(offset >= 0, $"行番号検証用の文字列が存在する: {marker}");
+        return 1 + source[..offset].Count(c => c == '\n');
     }
 
     private static Task ContextKindsAndPrompts()

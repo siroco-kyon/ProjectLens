@@ -13,7 +13,7 @@ namespace ProjectLens.Core.Analysis;
 public sealed class ProjectAnalyzer : IProjectAnalyzer
 {
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
-        { ".cs", ".xaml", ".razor", ".cshtml", ".json", ".config", ".resx", ".xml" };
+        { ".cs", ".xaml", ".razor", ".cshtml", ".json", ".config", ".resx", ".xml", ".settings" };
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly Regex SolutionProject = new("^\\s*Project\\([^\\r\\n]*?\\)\\s*=\\s*\"[^\"]*\"\\s*,\\s*\"(?<path>[^\"]+\\.csproj)\"",
         RegexOptions.Multiline | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
@@ -288,8 +288,9 @@ public sealed class ProjectAnalyzer : IProjectAnalyzer
             }
             catch (XmlException ex) { diagnostics.Add(new AnalysisDiagnostic(relative, ex.LineNumber, "Warning", $"XAMLを構造として読み取れません: {ex.Message}")); }
         }
+        var webApiSettings = WebApiAnalyzer.AnalyzeConfiguration(text, relative, diagnostics, cancellationToken);
         return new ParsedSource(new SourceFileInfo(relative, fullPath, projectName, isXaml ? "XAML" : "Other",
-            SyntaxAnalyzer.RoleHint(relative), [], [], [], diagnostics, text), [], [], [], new Dictionary<string, string>(), xamlClass);
+            SyntaxAnalyzer.RoleHint(relative), [], [], [], diagnostics, text) { WebApiSettings = webApiSettings }, [], [], [], new Dictionary<string, string>(), xamlClass);
     }
 
     private static void BuildRelationships(IReadOnlyList<ParsedSource> files, ICollection<FileRelationship> relationships,

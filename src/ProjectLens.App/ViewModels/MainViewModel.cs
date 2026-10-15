@@ -42,6 +42,8 @@ public sealed class MainViewModel : ObservableObject
     private Choice<string> _selectedFormat;
     private ContextPart? _selectedPart;
     private FileItem? _selectedFile;
+    private WebApiCallItem? _selectedWebApiCall;
+    private WebApiSettingItem? _selectedWebApiSetting;
     private string _previewHint = "解析結果から資料を生成すると、ここに表示されます。";
     private string _exportedFiles = "";
 
@@ -60,12 +62,16 @@ public sealed class MainViewModel : ObservableObject
         ProjectsView = CollectionViewSource.GetDefaultView(ProjectItems);
         RelationshipsView = CollectionViewSource.GetDefaultView(RelationshipItems);
         DiagnosticsView = CollectionViewSource.GetDefaultView(Diagnostics);
+        WebApiCallsView = CollectionViewSource.GetDefaultView(WebApiCallItems);
+        WebApiSettingsView = CollectionViewSource.GetDefaultView(WebApiSettingItems);
         TypesView.Filter = item => item is TypeItem t && Matches(ResultsFilter, t.FullName, t.Kind, t.FilePath, t.Bases);
         MembersView.Filter = item => item is MemberItem m && Matches(ResultsFilter, m.TypeName, m.Name, m.FilePath, m.Signature);
         FilesView.Filter = item => item is FileItem f && Matches(ResultsFilter, f.RelativePath, f.ProjectName, f.RoleNote, f.Kind);
         ProjectsView.Filter = item => item is ProjectItem p && Matches(ResultsFilter, p.Name, p.Framework, p.RelativePath, p.References, p.Packages);
         RelationshipsView.Filter = item => item is RelationshipItem r && Matches(ResultsFilter, r.FromFile, r.ToFile, r.Kind, r.Evidence, r.Confidence);
         DiagnosticsView.Filter = item => item is AnalysisDiagnostic d && Matches(ResultsFilter, d.FilePath, d.Severity, d.Message);
+        WebApiCallsView.Filter = item => item is WebApiCallItem c && Matches(ResultsFilter, c.FilePath, c.Caller, c.Client, c.HttpMethod, c.Address, c.RequestData, c.ResponseType, c.ProcessingText, c.Confidence);
+        WebApiSettingsView.Filter = item => item is WebApiSettingItem s && Matches(ResultsFilter, s.FilePath, s.Kind, s.Key, s.Value, s.Confidence);
 
         BrowseFolderCommand = new(() => RunAction(() => { var path = _interaction.ChooseInputFolder(); if (path is not null) InputPath = path; }), () => CanEdit);
         BrowseFileCommand = new(() => RunAction(() => { var path = _interaction.ChooseInputFile(); if (path is not null) InputPath = path; }), () => CanEdit);
@@ -77,6 +83,8 @@ public sealed class MainViewModel : ObservableObject
         ExportCommand = new(ExportAsync, () => CanEdit && _document is not null && !string.IsNullOrWhiteSpace(OutputDirectory));
         SelectVisibleFilesCommand = new(() => { foreach (var file in FileItems.Where(FileMatches)) file.InContext = true; }, () => CanEdit && _result is not null);
         ClearSelectionCommand = new(() => { foreach (var file in FileItems) file.InContext = false; foreach (var type in TypeItems) type.InContext = false; }, () => CanEdit && _result is not null);
+        SelectWebApiCallFileCommand = new(() => SelectApiFile(SelectedWebApiCall?.FilePath), () => CanEdit && FindFile(SelectedWebApiCall?.FilePath) is not null);
+        SelectWebApiSettingFileCommand = new(() => SelectApiFile(SelectedWebApiSetting?.FilePath), () => CanEdit && FindFile(SelectedWebApiSetting?.FilePath) is not null);
     }
 
     public IReadOnlyList<Choice<ContextKind>> ContextKinds { get; } =
@@ -98,6 +106,8 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<ProjectItem> ProjectItems { get; } = [];
     public ObservableCollection<RelationshipItem> RelationshipItems { get; } = [];
     public ObservableCollection<AnalysisDiagnostic> Diagnostics { get; } = [];
+    public ObservableCollection<WebApiCallItem> WebApiCallItems { get; } = [];
+    public ObservableCollection<WebApiSettingItem> WebApiSettingItems { get; } = [];
     public ObservableCollection<ContextPart> Parts { get; } = [];
     public ICollectionView TypesView { get; }
     public ICollectionView MembersView { get; }
@@ -105,6 +115,8 @@ public sealed class MainViewModel : ObservableObject
     public ICollectionView ProjectsView { get; }
     public ICollectionView RelationshipsView { get; }
     public ICollectionView DiagnosticsView { get; }
+    public ICollectionView WebApiCallsView { get; }
+    public ICollectionView WebApiSettingsView { get; }
 
     public RelayCommand BrowseFolderCommand { get; }
     public RelayCommand BrowseFileCommand { get; }
@@ -116,6 +128,8 @@ public sealed class MainViewModel : ObservableObject
     public AsyncCommand ExportCommand { get; }
     public RelayCommand SelectVisibleFilesCommand { get; }
     public RelayCommand ClearSelectionCommand { get; }
+    public RelayCommand SelectWebApiCallFileCommand { get; }
+    public RelayCommand SelectWebApiSettingFileCommand { get; }
 
     public bool IsBusy
     {
@@ -138,7 +152,9 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (!Set(ref _resultsFilter, value)) return;
-            foreach (var view in new[] { TypesView, MembersView, FilesView, ProjectsView, RelationshipsView, DiagnosticsView }) view.Refresh();
+            foreach (var view in new[] { TypesView, MembersView, FilesView, ProjectsView, RelationshipsView, DiagnosticsView, WebApiCallsView, WebApiSettingsView }) view.Refresh();
+            if (SelectedWebApiCall is not null && !WebApiCallsView.Contains(SelectedWebApiCall)) SelectedWebApiCall = null;
+            if (SelectedWebApiSetting is not null && !WebApiSettingsView.Contains(SelectedWebApiSetting)) SelectedWebApiSetting = null;
         }
     }
     public Choice<ContextKind> SelectedKind
@@ -167,6 +183,16 @@ public sealed class MainViewModel : ObservableObject
     public string OutputDirectory { get => _outputDirectory; set { if (Set(ref _outputDirectory, value)) ExportCommand.Refresh(); } }
     public Choice<string> SelectedFormat { get => _selectedFormat; set => Set(ref _selectedFormat, value); }
     public FileItem? SelectedFile { get => _selectedFile; set => Set(ref _selectedFile, value); }
+    public WebApiCallItem? SelectedWebApiCall
+    {
+        get => _selectedWebApiCall;
+        set { if (Set(ref _selectedWebApiCall, value)) SelectWebApiCallFileCommand?.Refresh(); }
+    }
+    public WebApiSettingItem? SelectedWebApiSetting
+    {
+        get => _selectedWebApiSetting;
+        set { if (Set(ref _selectedWebApiSetting, value)) SelectWebApiSettingFileCommand?.Refresh(); }
+    }
     public ContextPart? SelectedPart
     {
         get => _selectedPart;
@@ -184,6 +210,7 @@ public sealed class MainViewModel : ObservableObject
     public int MethodCount => _result?.MethodCount ?? 0;
     public int TypeCount => TypeItems.Count;
     public int DiagnosticCount => Diagnostics.Count;
+    public string WebApiSummary => $"呼び出し候補 {WebApiCallItems.Count:N0} 件 / 接続設定 {WebApiSettingItems.Count:N0} 件";
     public string SelectedScopeText => $"ファイル {FileItems.Count(f => f.InContext):N0} / 型 {TypeItems.Count(t => t.InContext):N0} を選択";
     public string ContextCharacters => _document is null ? "未生成" : $"全体 {_document.CharacterCount:N0} 文字 · {_document.Parts.Count:N0} パート";
     public string PartCharacters => SelectedPart is null ? "" : $"表示中 {SelectedPart.Text.Length:N0} 文字";
@@ -333,6 +360,10 @@ public sealed class MainViewModel : ObservableObject
         foreach (var project in result.Projects) ProjectItems.Add(new ProjectItem(project));
         foreach (var relationship in result.Relationships) RelationshipItems.Add(new RelationshipItem(relationship));
         foreach (var diagnostic in result.Diagnostics) Diagnostics.Add(diagnostic);
+        foreach (var call in result.WebApiCalls) WebApiCallItems.Add(new WebApiCallItem(call));
+        foreach (var setting in result.WebApiSettings) WebApiSettingItems.Add(new WebApiSettingItem(setting));
+        SelectedWebApiCall = WebApiCallsView.Cast<WebApiCallItem>().FirstOrDefault();
+        SelectedWebApiSetting = WebApiSettingsView.Cast<WebApiSettingItem>().FirstOrDefault();
         BuildTree();
         RaiseResultProperties();
         RefreshCommands();
@@ -343,15 +374,29 @@ public sealed class MainViewModel : ObservableObject
         _result = null;
         _analysisDirty = true;
         SelectedFile = null;
+        SelectedWebApiCall = null;
+        SelectedWebApiSetting = null;
         foreach (var collection in new[] { TreeRoots }) collection.Clear();
         FileItems.Clear(); TypeItems.Clear(); MemberItems.Clear(); ProjectItems.Clear(); RelationshipItems.Clear(); Diagnostics.Clear();
+        WebApiCallItems.Clear(); WebApiSettingItems.Clear();
         InvalidatePreview();
         RaiseResultProperties();
     }
 
     private void RaiseResultProperties()
     {
-        foreach (var property in new[] { nameof(ProjectName), nameof(RootPath), nameof(AnalysisState), nameof(ProjectCount), nameof(FileCount), nameof(ClassCount), nameof(MethodCount), nameof(TypeCount), nameof(DiagnosticCount), nameof(SelectedScopeText) }) Raise(property);
+        foreach (var property in new[] { nameof(ProjectName), nameof(RootPath), nameof(AnalysisState), nameof(ProjectCount), nameof(FileCount), nameof(ClassCount), nameof(MethodCount), nameof(TypeCount), nameof(DiagnosticCount), nameof(SelectedScopeText), nameof(WebApiSummary) }) Raise(property);
+    }
+
+    private FileItem? FindFile(string? path) => path is null ? null : FileItems.FirstOrDefault(file => file.RelativePath.Equals(path, StringComparison.OrdinalIgnoreCase));
+
+    private void SelectApiFile(string? path)
+    {
+        var file = FindFile(path);
+        if (file is null) return;
+        file.InContext = true;
+        SelectedFile = file;
+        StatusText = $"資料の対象に選択しました · {file.RelativePath}";
     }
 
     private void SelectionOrNotesChanged()
@@ -428,6 +473,7 @@ public sealed class MainViewModel : ObservableObject
         BrowseFolderCommand?.Refresh(); BrowseFileCommand?.Refresh(); AnalyzeCommand?.Refresh(); CancelCommand?.Refresh();
         GenerateCommand?.Refresh(); CopyCommand?.Refresh(); BrowseOutputCommand?.Refresh(); ExportCommand?.Refresh();
         SelectVisibleFilesCommand?.Refresh(); ClearSelectionCommand?.Refresh();
+        SelectWebApiCallFileCommand?.Refresh(); SelectWebApiSettingFileCommand?.Refresh();
     }
 
     private static string[] SplitList(string value) => value.Split([';', '\r', '\n'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
@@ -438,6 +484,7 @@ public sealed class MainViewModel : ObservableObject
         InputPath = inputPath;
         await AnalyzeAsync();
         if (_result is null || FileCount == 0 || HasError) throw new InvalidOperationException(ErrorText.Length > 0 ? ErrorText : "スモークテストの解析結果が空です。");
+        AssertWebApiResults();
         SelectedKind = ContextKinds[1];
         await GenerateAsync();
         if (_document is null || string.IsNullOrWhiteSpace(PreviewText) || HasError) throw new InvalidOperationException("スモークテストで資料を生成できませんでした。");
@@ -484,6 +531,47 @@ public sealed class MainViewModel : ObservableObject
         await GenerateAsync();
         AssertFeaturePreviewGenerated();
         OutputDirectory = originalOutput;
+    }
+
+    private void AssertWebApiResults()
+    {
+        var result = _result!;
+        if (WebApiCallItems.Count != result.WebApiCalls.Count || WebApiSettingItems.Count != result.WebApiSettings.Count)
+            throw new InvalidOperationException("WebAPI解析結果が画面の一覧に反映されていません。");
+        var call = WebApiCallItems.FirstOrDefault();
+        if (call is not null)
+        {
+            SelectedWebApiCall = call;
+            SelectWebApiCallFileCommand.Execute(null);
+            if (SelectedFile != FindFile(call.FilePath) || SelectedFile?.InContext != true)
+                throw new InvalidOperationException("WebAPI呼び出しのファイルを資料に選択できません。");
+            foreach (var term in new[] { call.Address, call.RequestData, call.ResponseType, call.Processing.FirstOrDefault()?.Description }.Where(value => !string.IsNullOrWhiteSpace(value)))
+            {
+                ResultsFilter = term!;
+                if (!WebApiCallsView.Contains(call)) throw new InvalidOperationException("WebAPIの送受信・処理内容を検索できません。");
+            }
+        }
+        var setting = WebApiSettingItems.FirstOrDefault();
+        if (setting is not null)
+        {
+            ResultsFilter = setting.Key;
+            if (!WebApiSettingsView.Contains(setting)) throw new InvalidOperationException("WebAPI接続設定のキーを検索できません。");
+            ResultsFilter = setting.Value;
+            if (!WebApiSettingsView.Contains(setting)) throw new InvalidOperationException("WebAPI接続設定の値を検索できません。");
+            SelectedWebApiSetting = setting;
+            SelectWebApiSettingFileCommand.Execute(null);
+            if (SelectedFile != FindFile(setting.FilePath) || SelectedFile?.InContext != true)
+                throw new InvalidOperationException("WebAPI接続設定のファイルを資料に選択できません。");
+        }
+        ResultsFilter = "__smoke_webapi_no_match__";
+        if (!WebApiCallsView.IsEmpty || !WebApiSettingsView.IsEmpty || SelectedWebApiCall is not null || SelectedWebApiSetting is not null)
+            throw new InvalidOperationException("WebAPI検索で非表示になった結果が選択されたままです。");
+        ResultsFilter = "";
+        ClearResults();
+        if (WebApiCallItems.Count != 0 || WebApiSettingItems.Count != 0 || SelectedWebApiCall is not null || SelectedWebApiSetting is not null
+            || SelectWebApiCallFileCommand.CanExecute(null) || SelectWebApiSettingFileCommand.CanExecute(null))
+            throw new InvalidOperationException("再解析時に古いWebAPI解析結果・選択が残ります。");
+        SetResult(result);
     }
 
     private void AssertFeaturePreviewGenerated()

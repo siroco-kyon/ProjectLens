@@ -72,7 +72,7 @@
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                     <TextBlock Text="解析結果" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
-                    <StackPanel Grid.Row="1" Margin="0,0,0,8"><TextBlock Text="検索：型・メンバー・参照・診断" Style="{StaticResource MutedText}" Margin="0,0,0,4" /><TextBox Text="{Binding ResultsFilter, UpdateSourceTrigger=PropertyChanged}" ToolTip="名前空間・型・メンバー・パス・診断を検索" AutomationProperties.Name="解析結果検索" /></StackPanel>
+                    <StackPanel Grid.Row="1" Margin="0,0,0,8"><TextBlock Text="検索：型・メンバー・参照・WebAPI・診断" Style="{StaticResource MutedText}" Margin="0,0,0,4" /><TextBox Text="{Binding ResultsFilter, UpdateSourceTrigger=PropertyChanged}" ToolTip="名前空間・型・メンバー・パス・API接続先・送受信・処理・診断を検索" AutomationProperties.Name="解析結果検索" /></StackPanel>
                     <TabControl x:Name="ResultTabs" Grid.Row="2">
                         <TabItem Header="型">
                             <DataGrid ItemsSource="{Binding TypesView}" IsReadOnly="False" IsEnabled="{Binding CanEdit}">
@@ -149,8 +149,91 @@
                                 </DataGrid.Columns>
                             </DataGrid>
                         </TabItem>
+                        <TabItem x:Name="WebApiTab" Header="WebAPI">
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                <TextBlock Text="{Binding WebApiSummary}" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,4" ToolTip="コード・設定に書かれた情報です。URLや設定値は実行時に評価しません。" />
+                                <TabControl Grid.Row="1">
+                                    <TabItem Header="呼び出し・処理">
+                                        <Grid>
+                                            <Grid.RowDefinitions><RowDefinition Height="0.65*" MinHeight="65" /><RowDefinition Height="8" /><RowDefinition Height="*" MinHeight="40" /></Grid.RowDefinitions>
+                                            <DataGrid x:Name="WebApiCallsGrid" ItemsSource="{Binding WebApiCallsView}" SelectedItem="{Binding SelectedWebApiCall}" IsReadOnly="True" AutomationProperties.Name="WebAPI呼び出し一覧">
+                                                <DataGrid.Columns>
+                                                    <DataGridTextColumn Header="HTTP" Binding="{Binding HttpMethod}" Width="85" />
+                                                    <DataGridTextColumn Header="接続先・パス（記述）" Binding="{Binding Address}" Width="230" />
+                                                    <DataGridTextColumn Header="呼び出し元" Binding="{Binding Caller}" Width="210" />
+                                                    <DataGridTextColumn Header="クライアント" Binding="{Binding Client}" Width="150" />
+                                                    <DataGridTextColumn Header="根拠の確度" Binding="{Binding Confidence}" Width="100" />
+                                                    <DataGridTextColumn Header="ファイル" Binding="{Binding FilePath}" Width="220" />
+                                                    <DataGridTextColumn Header="行" Binding="{Binding Line}" Width="55" />
+                                                </DataGrid.Columns>
+                                            </DataGrid>
+                                            <GridSplitter Grid.Row="1" Height="3" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="{StaticResource BorderBrush}" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" />
+                                            <Border Grid.Row="2" Background="{StaticResource InputBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4" Padding="10">
+                                                    <ScrollViewer x:Name="WebApiProcessingScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                                        <StackPanel DataContext="{Binding SelectedWebApiCall}">
+                                                            <Button Content="このファイルを資料に選択" Command="{Binding DataContext.SelectWebApiCallFileCommand, RelativeSource={RelativeSource AncestorType=Window}}" HorizontalAlignment="Left" FontSize="11" Padding="8,5" Margin="0,0,0,8" />
+                                                            <TextBlock Text="{Binding Caller}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                            <TextBlock Text="{Binding Location}" Foreground="{StaticResource AccentBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                                            <TextBlock Text="接続先・パス（記述）" Style="{StaticResource MutedText}" Margin="0,10,0,3" />
+                                                            <TextBlock Text="{Binding Address}" TextWrapping="Wrap" />
+                                                            <TextBlock Text="送信内容（引数・データの記述）" Style="{StaticResource MutedText}" Margin="0,10,0,3" />
+                                                            <TextBlock Text="{Binding RequestText}" TextWrapping="Wrap" />
+                                                            <TextBlock Text="応答の型・読み取り" Style="{StaticResource MutedText}" Margin="0,10,0,3" />
+                                                            <TextBlock Text="{Binding ResponseText}" TextWrapping="Wrap" />
+                                                            <TextBlock Text="周辺処理の記述（候補）" FontWeight="SemiBold" Margin="0,12,0,3" />
+                                                            <TextBlock Text="{Binding ProcessingHint}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,5" />
+                                                            <ItemsControl ItemsSource="{Binding Processing}">
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="0,6">
+                                                                            <StackPanel>
+                                                                                <DockPanel><TextBlock DockPanel.Dock="Right" Text="{Binding Line, StringFormat={}行 {0}}" Style="{StaticResource MutedText}" /><TextBlock Text="{Binding Kind}" Foreground="{StaticResource AccentBrush}" FontSize="12" /></DockPanel>
+                                                                                <TextBlock Text="{Binding Description}" TextWrapping="Wrap" FontSize="12" Margin="0,3,0,0" />
+                                                                            </StackPanel>
+                                                                        </Border>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                        </StackPanel>
+                                                    </ScrollViewer>
+                                            </Border>
+                                        </Grid>
+                                    </TabItem>
+                                    <TabItem x:Name="WebApiSettingsTab" Header="接続設定">
+                                        <Grid>
+                                            <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                            <DataGrid ItemsSource="{Binding WebApiSettingsView}" SelectedItem="{Binding SelectedWebApiSetting}" IsReadOnly="True" AutomationProperties.Name="WebAPI接続設定一覧">
+                                                <DataGrid.Columns>
+                                                    <DataGridTextColumn Header="設定方法" Binding="{Binding Kind}" Width="140" />
+                                                    <DataGridTextColumn Header="キー・設定箇所" Binding="{Binding Key}" Width="190" />
+                                                    <DataGridTextColumn Header="値・式（記述）" Binding="{Binding Value}" Width="240" />
+                                                    <DataGridTextColumn Header="根拠の確度" Binding="{Binding Confidence}" Width="100" />
+                                                    <DataGridTextColumn Header="ファイル" Binding="{Binding FilePath}" Width="220" />
+                                                    <DataGridTextColumn Header="行" Binding="{Binding Line}" Width="55" />
+                                                </DataGrid.Columns>
+                                            </DataGrid>
+                                            <Border Grid.Row="1" Background="{StaticResource InputBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,8,0,0" MaxHeight="210">
+                                                <Grid>
+                                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                                    <Button Content="このファイルを資料に選択" Command="{Binding SelectWebApiSettingFileCommand}" HorizontalAlignment="Left" FontSize="11" Padding="8,5" Margin="0,0,0,8" />
+                                                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                                        <StackPanel DataContext="{Binding SelectedWebApiSetting}">
+                                                            <TextBlock Text="{Binding Key}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                            <TextBlock Text="{Binding Location}" Foreground="{StaticResource AccentBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                                            <TextBlock Text="値・式（記述）" Style="{StaticResource MutedText}" Margin="0,8,0,3" />
+                                                            <TextBlock Text="{Binding Value}" TextWrapping="Wrap" />
+                                                        </StackPanel>
+                                                    </ScrollViewer>
+                                                </Grid>
+                                            </Border>
+                                        </Grid>
+                                    </TabItem>
+                                </TabControl>
+                            </Grid>
+                        </TabItem>
                         <TabItem Header="診断">
-                            <DataGrid ItemsSource="{Binding Diagnostics}">
+                            <DataGrid ItemsSource="{Binding DiagnosticsView}">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="重大度" Binding="{Binding Severity}" Width="90" />
                                     <DataGridTextColumn Header="説明" Binding="{Binding Message}" Width="400" />
@@ -160,7 +243,7 @@
                             </DataGrid>
                         </TabItem>
                     </TabControl>
-                    <TextBlock Grid.Row="3" Text="構文解析を中心に表示。型・呼び出し先の同一性、完全な依存関係は確定しません。" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,9,0,0" />
+                    <TextBlock Grid.Row="3" Text="型・呼び出し先・依存関係は構文からの候補です。" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,9,0,0" />
                 </Grid>
             </Border>
             <GridSplitter Grid.Column="3" Width="4" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" ResizeBehavior="PreviousAndNext" />
